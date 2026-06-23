@@ -1,0 +1,38 @@
+{
+  "name": "leadflow",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "schema": "tsx scripts/apply-schema.ts",
+    "import": "tsx scripts/import-csv.ts",
+    "trace": "tsx scripts/run-skiptrace.ts",
+    "scrub": "tsx scripts/run-scrub.ts",
+    "smoke:tracerfy": "tsx scripts/smoke-tracerfy.ts",
+    "smoke:twilio": "tsx scripts/smoke-twilio.ts",
+    "smoke:webhook": "tsx scripts/smoke-webhook.ts",
+    "test": "tsx --test lib/*.test.ts"
+  },
+  "dependencies": {
+    "@neondatabase/serverless": "^0.10.4",
+    "next": "^14.2.15",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "twilio": "^6.0.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.16.11",
+    "@types/react": "^18.3.11",
+    "@types/react-dom": "^18.3.0",
+    "autoprefixer": "^10.4.20",
+    "csv-parse": "^5.5.6",
+    "dotenv": "^16.4.5",
+    "postcss": "^8.4.47",
+    "tailwindcss": "^3.4.13",
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.2"
+  }
+}

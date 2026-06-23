@@ -10,8 +10,8 @@ LeadFlow — a self-hosted SMS lead-generation tool for home-service businesses.
 - **Postgres** via **Neon** (free tier), provisioned through the Vercel Marketplace integration, using the `@neondatabase/serverless` driver as the thin query layer. (Decided 2026-06-22 — see overview.md. NOTE: Vercel's old first-party "Vercel Postgres" and its `@vercel/postgres` driver are deprecated — do not use them. Do not introduce Supabase, the `postgres` package, or `drizzle` either.)
 - **Twilio Node SDK** for SMS send + inbound webhook.
 - **Tracerfy REST API** for skip trace + DNC/litigator scrub — docs: https://www.tracerfy.com/skip-tracing-api-documentation/ (Bearer token auth, credit-based).
-- **Resend** (free tier) for email lead forwarding, optional.
 - Tailwind CSS for the dashboard. Keep it minimal.
+- (Lead delivery = the dashboard + an SMS ping to Talan via Twilio. No email/Resend — dropped 2026-06-22.)
 
 ## Project layout
 ```
@@ -28,7 +28,7 @@ LeadFlow — a self-hosted SMS lead-generation tool for home-service businesses.
   /twilio.ts        — send helpers, pacing
   /tracerfy.ts      — skip trace + scrub client
   /classify.ts      — reply interest classification
-  /forward.ts       — lead forwarding to Talan
+  /forward.ts       — lead SMS ping to Talan (dashboard is the primary surface)
 /data
   tallahassee_test_500.csv — pilot contact list (name + situs address, NO phones yet)
 /db
@@ -53,7 +53,7 @@ Manual testing against Twilio/Tracerfy sandboxes until MVP ships. Add a `scripts
 - Idempotency: sending must be resumable. Track per-contact send state so a re-run never double-texts.
 
 ### Secrets
-All credentials via environment variables (`.env.local`, Vercel env). Never hardcode. Required: `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER` (or messaging service SID), `TRACERFY_API_KEY`, `DATABASE_URL`, `TALAN_FORWARD_PHONE`, optional `RESEND_API_KEY` + `TALAN_FORWARD_EMAIL`, `ADMIN_PASSWORD`.
+All credentials via environment variables (`.env.local`, Vercel env). Never hardcode. Required: `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER` (or messaging service SID), `TRACERFY_API_KEY`, `DATABASE_URL`, `TALAN_FORWARD_PHONE`, `ADMIN_PASSWORD`. (Resend/email vars removed — lead delivery is dashboard + SMS ping only.)
 
 ## Where things live
 - `overview.md` — project vision, decisions, compliance note

@@ -9,6 +9,7 @@
 
 import { NextResponse } from "next/server";
 import { isAuthed } from "@/app/actions";
+import { clientIdFromRequest } from "@/lib/request-client";
 import { traceBatch, InsufficientCreditsError } from "@/lib/skiptrace";
 import type { TraceType } from "@/lib/tracerfy";
 
@@ -26,7 +27,7 @@ export async function POST(req: Request) {
     const limit = typeof body.limit === "number" ? body.limit : undefined;
     const traceType: TraceType = body.traceType === "advanced" ? "advanced" : "normal";
 
-    const result = await traceBatch({ limit, traceType });
+    const result = await traceBatch(clientIdFromRequest(req), { limit, traceType });
     return NextResponse.json(result);
   } catch (err) {
     if (err instanceof InsufficientCreditsError) {

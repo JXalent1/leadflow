@@ -5,6 +5,10 @@
 // it never hits a serverless function timeout. Idempotent: each chunk only traces
 // skiptrace_status='pending' rows and commits before the next, so a re-run resumes.
 //
+// Durability (hotfix 2026-06-23): traceBatch persists each submitted queue id and, on
+// every call, FIRST re-ingests any orphaned (paid-but-not-written-back) job — so a crash
+// during the result fetch can no longer strand paid results; the next run recovers them.
+//
 // Usage:
 //   npm run trace                 # default 50/chunk, traces ALL pending
 //   npm run trace -- --batch=25   # 25 per chunk
@@ -14,12 +18,14 @@
 //
 // Run a small --max first, eyeball the dashboard, then run the rest.
 
+// dotenv must run before @/lib/* loads: lib/db throws at module load if DATABASE_URL is
+// unset, and a static import would be hoisted above config() (ESM order). Load env, then
+// dynamic-import the lib inside main().
 import { config } from "dotenv";
 config({ path: ".env.local" });
 config();
 
-import { traceBatch, InsufficientCreditsError } from "@/lib/skiptrace";
-import type { TraceType } from "@/lib/tracerfy";
+import type { TraceType } from "@/lib/tracerfy"; // type-only — erased, never triggers lib/db load
 
 function arg(name: string): string | undefined {
   const hit = process.argv.find((a) => a.startsWith(`--${name}=`));
@@ -36,13 +42,17 @@ async function main() {
   if (!process.env.DATABASE_URL) throw new Error("DATABASE_URL is not set (add it to .env.local).");
   if (!process.env.TRACERFY_API_KEY) throw new Error("TRACERFY_API_KEY is not set.");
 
+  const { traceBatch, InsufficientCreditsError } = await import("@/lib/skiptrace");
+  const { DEFAULT_CLIENT_ID } = await import("@/lib/clients");
+
+  const clientId = arg("client") ? Math.max(1, Number(arg("client"))) : DEFAULT_CLIENT_ID;
   const batch = Math.max(1, Number(arg("batch") ?? 50));
   const max = arg("max") ? Math.max(1, Number(arg("max"))) : Infinity;
   const delay = Math.max(0, Number(arg("delay") ?? 0));
   const traceType: TraceType = flag("advanced") ? "advanced" : "normal";
 
   console.log(
-    `[trace] starting — batch=${batch} max=${max === Infinity ? "ALL" : max} type=${traceType} delay=${delay}ms`
+    `[trace] starting — client=${clientId} batch=${batch} max=${max === Infinity ? "ALL" : max} type=${traceType} delay=${delay}ms`
   );
 
   let traced = 0;
@@ -54,7 +64,7 @@ async function main() {
     const limit = Math.min(batch, max - traced);
     let res;
     try {
-      res = await traceBatch({ limit, traceType });
+      res = await traceBatch(clientId, { limit, traceType });
     } catch (err) {
       if (err instanceof InsufficientCreditsError) {
         console.error(

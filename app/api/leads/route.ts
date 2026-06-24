@@ -5,6 +5,7 @@
 
 import { NextResponse } from "next/server";
 import { isAuthed } from "@/app/actions";
+import { clientIdFromRequest } from "@/lib/request-client";
 import { setLeadStatus } from "@/lib/inbox-db";
 import { LEAD_STATUSES, type LeadStatus } from "@/lib/lead-status";
 
@@ -40,7 +41,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "invalid_notes" }, { status: 400 });
     }
 
-    const lead = await setLeadStatus(leadId, {
+    const lead = await setLeadStatus(clientIdFromRequest(req), leadId, {
       status: hasStatus ? (body.status as string) : undefined,
       notes: hasNotes ? (body.notes as string | null) : undefined,
     });

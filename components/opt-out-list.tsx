@@ -1,4 +1,4 @@
-import type { OptOutRow } from "@/lib/db";
+import type { OptOutRow } from "@/lib/dashboard-db";
 import { displayName, formatTime } from "./dashboard-utils";
 
 /** Opt-out list — recent STOPs so suppression is visible at a glance. */

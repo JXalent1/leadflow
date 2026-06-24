@@ -1,0 +1,171 @@
+// scripts/isolation-fixture.ts — proves multi-tenant isolation (v2 Module V1 acceptance).
+//
+// Creates a temporary client #2 with its own contact, opt-out, inbound message + lead, then
+// asserts through the REAL lib helpers that:
+//   1. Eligibility / inbox / suppression / contact-lookup never cross clients (both directions).
+//   2. The inbound webhook routes strictly by the To number → owning client, and processing an
+//      inbound to client 2's number writes ONLY client 2's data (client 1 untouched).
+//   3. Config is read from the client record: changing client 1's message_template changes what
+//      renderMessage produces for client 1 ONLY (client 2 unchanged).
+// Everything it creates is cleaned up at the end (and client 1's template is restored), so it is
+// safe to re-run. Exits non-zero on any failed assertion.
+//
+// Run: npm run test:isolation
+
+import { config } from "dotenv";
+config({ path: ".env.local" });
+config();
+
+const C2 = 2;
+const C2_FROM = "+15005550006"; // client 2's campaign number (not client 1's +18508213720)
+const C2_PHONE = "9995551234"; // a client-2 contact phone (last-10)
+let failures = 0;
+function check(name: string, cond: boolean) {
+  console.log(`${cond ? "✓" : "✗ FAIL"}  ${name}`);
+  if (!cond) failures++;
+}
+
+async function main() {
+  if (!process.env.DATABASE_URL) throw new Error("DATABASE_URL is not set (.env.local).");
+
+  const { sql } = await import("@/lib/db");
+  const {
+    getEligibleContacts,
+    findContactByPhone,
+    recordOptOut,
+    markSuppressed,
+    logInboundOnce,
+    createLead,
+  } = await import("@/lib/db");
+  const { getInboxThreads, isPhoneOptedOut } = await import("@/lib/inbox-db");
+  const { getClientById, getClientByInboundNumber } = await import("@/lib/clients");
+  const { renderMessage } = await import("@/lib/sms");
+  const { processInbound } = await import("@/lib/inbound");
+
+  // --- snapshot client 1's pre-fixture state so we can prove "unchanged" + restore template ---
+  const c1Before = await getClientById(1);
+  if (!c1Before) throw new Error("client 1 (Talan) missing — run npm run schema first.");
+  const c1TemplateOrig = c1Before.message_template;
+  const c1EligibleBefore = (await getEligibleContacts(1)).length;
+  const c1InboxBefore = (await getInboxThreads(1)).length;
+  const c1OptOutsBefore = (await sql`SELECT count(*)::int n FROM opt_outs WHERE client_id=1`)[0] as { n: number };
+  const c1MsgsBefore = (await sql`SELECT count(*)::int n FROM messages WHERE client_id=1`)[0] as { n: number };
+
+  try {
+    // --- create client 2 + its data ---------------------------------------------------------
+    await sql`
+      INSERT INTO clients (id, name, from_number, message_template, forward_phone,
+                           send_rate_per_hour, optout_confirmation)
+      VALUES (${C2}, 'ISOLATION TEST CLIENT', ${C2_FROM},
+              'Yo [NAME], different copy entirely. Reply STOP to opt out.', ${C2_FROM},
+              60, 'Client2 opt-out confirmation.')
+      ON CONFLICT (id) DO NOTHING
+    `;
+    // A client-2 contact that is fully eligible (phone, scrubbed clean, not sent).
+    const c2ContactRows = await sql`
+      INSERT INTO contacts (client_id, first_name, last_name, address, city, state, zip,
+                            phone, phone_type, skiptrace_status, scrub_status, send_status)
+      VALUES (${C2}, 'Casey', 'Two', '900 Other St', 'Tallahassee', 'FL', '32301',
+              ${C2_PHONE}, 'mobile', 'matched', 'clean', 'not_sent')
+      RETURNING id
+    `;
+    const c2ContactId = (c2ContactRows[0] as { id: number }).id;
+    // A client-2 opt-out + inbound + lead (so the inbox/suppression checks have data).
+    await recordOptOut(C2, c2ContactId, C2_PHONE);
+    await markSuppressed(C2, c2ContactId, "opt_out");
+    await logInboundOnce({ clientId: C2, contactId: c2ContactId, body: "hi", twilioSid: "SM_ISO_C2" });
+    await createLead({ clientId: C2, contactId: c2ContactId, replyText: "interested" });
+
+    // === 1. Eligibility never crosses clients ===
+    const elig1 = await getEligibleContacts(1);
+    const elig2 = await getEligibleContacts(2);
+    check("getEligibleContacts(1) excludes the client-2 contact", !elig1.some((c) => c.id === c2ContactId));
+    check("getEligibleContacts(1) only returns client_id=1 rows", elig1.every((c) => c.client_id === 1));
+    // The client-2 contact is suppressed (we opted it out), so it isn't eligible for client 2 either —
+    // prove the scope instead: every client-2 eligible row is client 2's.
+    check("getEligibleContacts(2) only returns client_id=2 rows", elig2.every((c) => c.client_id === 2));
+
+    // === 2. Inbox never crosses clients ===
+    const inbox1 = await getInboxThreads(1);
+    const inbox2 = await getInboxThreads(2);
+    check("getInboxThreads(1) excludes the client-2 contact", !inbox1.some((t) => t.id === c2ContactId));
+    check("getInboxThreads(2) includes ONLY the client-2 contact", inbox2.length === 1 && inbox2[0].id === c2ContactId);
+
+    // === 3. Suppression / opt-out never crosses clients ===
+    check("isPhoneOptedOut(2, c2phone) = true (client 2 owns the opt-out)", (await isPhoneOptedOut(2, C2_PHONE)) === true);
+    check("isPhoneOptedOut(1, c2phone) = false (client 1 must NOT see client 2's opt-out)", (await isPhoneOptedOut(1, C2_PHONE)) === false);
+
+    // === 4. Contact lookup never crosses clients ===
+    check("findContactByPhone(2, c2phone) finds the client-2 contact", (await findContactByPhone(2, C2_PHONE))?.id === c2ContactId);
+    check("findContactByPhone(1, c2phone) = null (client 1 can't see client 2's contact)", (await findContactByPhone(1, C2_PHONE)) === null);
+
+    // === 5. Webhook routes strictly by To → owning client ===
+    const byC2 = await getClientByInboundNumber(C2_FROM);
+    const byC1 = await getClientByInboundNumber("+18508213720");
+    check("getClientByInboundNumber(client2 number) → client 2", byC2?.id === 2);
+    check("getClientByInboundNumber(client1 number) → client 1", byC1?.id === 1);
+    check("getClientByInboundNumber(unknown number) → null (rejected)", (await getClientByInboundNumber("+19998887777")) === null);
+
+    // === 6. Processing an inbound to client 2's number writes ONLY client 2 ===
+    // Build client-2-scoped deps the same way the route does, then send a fresh interested reply
+    // from a NEW number we don't have a contact for under EITHER client, and confirm it lands as a
+    // client-2 orphan log and never creates a client-1 row.
+    const ORPHAN = "9995559999";
+    const deps = {
+      findContactByPhone: (p: string) => findContactByPhone(C2, p) as any,
+      logInboundOnce: (a: any) => logInboundOnce({ clientId: C2, ...a }),
+      recordOptOut: (cid: number | null, p: string) => recordOptOut(C2, cid, p),
+      markSuppressed: (cid: number, r: string) => markSuppressed(C2, cid, r),
+      recordOutbound: async () => {},
+      createLead: (a: any) => createLead({ clientId: C2, ...a }),
+      forwardLead: async () => true,
+    };
+    await processInbound(
+      { fromPhone: ORPHAN, body: "STOP", messageSid: "SM_ISO_ORPHAN" },
+      deps as any,
+      { bizName: "x", emitConfirmation: false }
+    );
+    const orphanInC2 = (await sql`SELECT count(*)::int n FROM opt_outs WHERE client_id=2 AND phone=${ORPHAN}`)[0] as { n: number };
+    const orphanInC1 = (await sql`SELECT count(*)::int n FROM opt_outs WHERE client_id=1 AND phone=${ORPHAN}`)[0] as { n: number };
+    check("an inbound STOP to client 2's number records the opt-out under client 2", orphanInC2.n === 1);
+    check("...and creates NO opt-out under client 1", orphanInC1.n === 0);
+
+    // === 7. Config from the client record: template change affects client 1 ONLY ===
+    const sampleContact = { firstName: "James", zip: "32301", address: "123 Main St" };
+    const c1RenderOrig = renderMessage((await getClientById(1))!.message_template ?? "", sampleContact);
+    const c2Render = renderMessage((await getClientById(2))!.message_template ?? "", sampleContact);
+    check("client 1 and client 2 render DIFFERENT copy from their own templates", c1RenderOrig !== c2Render);
+    // Change client 1's template in the DB, reload, re-render — output must change for client 1...
+    await sql`UPDATE clients SET message_template = 'CHANGED [NAME] copy. Reply STOP to opt out.' WHERE id = 1`;
+    const c1RenderAfter = renderMessage((await getClientById(1))!.message_template ?? "", sampleContact);
+    const c2RenderAfter = renderMessage((await getClientById(2))!.message_template ?? "", sampleContact);
+    check("changing client 1's message_template changes renderMessage for client 1", c1RenderAfter !== c1RenderOrig && c1RenderAfter.startsWith("CHANGED James copy."));
+    check("...and does NOT change client 2's render", c2RenderAfter === c2Render);
+  } finally {
+    // --- cleanup: restore client 1's template + remove ALL client-2 fixture data -------------
+    await sql`UPDATE clients SET message_template = ${c1TemplateOrig} WHERE id = 1`;
+    await sql`DELETE FROM leads WHERE client_id = ${C2}`;
+    await sql`DELETE FROM opt_outs WHERE client_id = ${C2}`;
+    await sql`DELETE FROM messages WHERE client_id = ${C2}`;
+    await sql`DELETE FROM contacts WHERE client_id = ${C2}`;
+    await sql`DELETE FROM clients WHERE id = ${C2}`;
+  }
+
+  // --- prove client 1 is byte-for-byte unchanged by the whole fixture ---
+  const c1After = await getClientById(1);
+  check("client 1 message_template restored exactly", (c1After?.message_template ?? null) === c1TemplateOrig);
+  check("client 1 eligible count unchanged", (await getEligibleContacts(1)).length === c1EligibleBefore);
+  check("client 1 inbox count unchanged", (await getInboxThreads(1)).length === c1InboxBefore);
+  const c1OptOutsAfter = (await sql`SELECT count(*)::int n FROM opt_outs WHERE client_id=1`)[0] as { n: number };
+  const c1MsgsAfter = (await sql`SELECT count(*)::int n FROM messages WHERE client_id=1`)[0] as { n: number };
+  check("client 1 opt_outs count unchanged", c1OptOutsAfter.n === c1OptOutsBefore.n);
+  check("client 1 messages count unchanged", c1MsgsAfter.n === c1MsgsBefore.n);
+
+  console.log(failures === 0 ? "\nISOLATION OK — all assertions passed." : `\nISOLATION FAILED — ${failures} assertion(s) failed.`);
+  process.exit(failures === 0 ? 0 : 1);
+}
+
+main().catch((err) => {
+  console.error("\n[isolation] FAILED:", err instanceof Error ? err.stack : err);
+  process.exit(1);
+});

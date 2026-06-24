@@ -91,15 +91,23 @@ export interface InboundOptions {
    * sending ours too would double-confirm).
    */
   emitConfirmation: boolean;
+  /**
+   * The opt-out confirmation copy to send. In v2 the webhook passes the owning client's
+   * `optout_confirmation`. When omitted, falls back to the default optOutConfirmation() —
+   * keeps existing tests (which don't supply it) producing the same text as before.
+   */
+  optOutConfirmation?: string;
 }
 
 // ---------------------------------------------------------------------------
 // Confirmation copy
 // ---------------------------------------------------------------------------
 
-/** The single CTIA-required opt-out confirmation. Kept to one SMS segment. */
-export function optOutConfirmation(bizName: string): string {
-  return `You're unsubscribed from ${bizName} and will receive no more messages. Reply HELP for help.`;
+/** The single CTIA-required opt-out confirmation. Kept to one SMS segment.
+ * No business name (per Jordan — the campaign copy carries no brand, so neither does this).
+ * Override the exact wording here if you want it different. */
+export function optOutConfirmation(_bizName: string): string {
+  return `You're unsubscribed and will receive no more messages. Reply HELP for help.`;
 }
 
 // ---------------------------------------------------------------------------
@@ -123,6 +131,13 @@ async function applyOptOut(
 /**
  * Decide and execute the handling of one inbound SMS. Returns an outcome the route
  * turns into TwiML. See the file header for the compliance-critical ordering.
+ *
+ * MULTI-TENANT INVARIANT (load-bearing): `deps` MUST already be bound to the client that owns the
+ * inbound `To` number — the route resolves it via getClientByInboundNumber(to) and builds
+ * client-scoped deps (buildDeps(client)) per request. Every effect here (contact lookup, opt-out,
+ * suppression, lead, forward) routes through `deps`, so binding the client at the call site is what
+ * keeps one client's STOP/lead from ever touching another client's data. Do NOT share/singleton the
+ * deps across requests.
  */
 export async function processInbound(
   msg: InboundMessage,
@@ -162,7 +177,7 @@ export async function processInbound(
 
     let confirmation: string | null = null;
     if (opts.emitConfirmation) {
-      confirmation = optOutConfirmation(opts.bizName);
+      confirmation = opts.optOutConfirmation ?? optOutConfirmation(opts.bizName);
       // Log the confirmation we hand to Twilio (sent via TwiML <Message> by the route).
       await deps.recordOutbound({
         contactId,

@@ -1,6 +1,8 @@
 import { redirect } from "next/navigation";
 import { isAuthed, logout } from "@/app/actions";
 import { getInboxThreads } from "@/lib/inbox-db";
+import { getClientById, clientWindow } from "@/lib/clients";
+import { clientIdFromSearchParams } from "@/lib/request-client";
 import { withinSendWindow, sendWindowLabel } from "@/lib/twilio";
 import InboxClient from "@/components/inbox/inbox-client";
 
@@ -10,12 +12,14 @@ export const dynamic = "force-dynamic";
 export default async function InboxPage({
   searchParams,
 }: {
-  searchParams: { contact?: string };
+  searchParams: { contact?: string; clientId?: string };
 }) {
   // Reuse the Session 1 admin gate. Unauthed → back to the / login.
   if (!(await isAuthed())) {
     redirect("/");
   }
+
+  const clientId = clientIdFromSearchParams(searchParams);
 
   const initialContactId = (() => {
     const n = Number(searchParams.contact);
@@ -24,8 +28,12 @@ export default async function InboxPage({
 
   let initialError: string | null = null;
   let threads = null;
+  let window = null;
   try {
-    threads = await getInboxThreads();
+    const client = await getClientById(clientId);
+    if (!client) throw new Error("client not found");
+    window = clientWindow(client);
+    threads = await getInboxThreads(clientId);
   } catch (err) {
     initialError = err instanceof Error ? err.message : "Unknown database error";
   }
@@ -49,7 +57,7 @@ export default async function InboxPage({
         </div>
       </header>
 
-      {initialError || !threads ? (
+      {initialError || !threads || !window ? (
         <p className="rounded-md bg-red-50 px-4 py-3 text-sm text-red-700">
           Database error: {initialError ?? "could not load inbox"}
         </p>
@@ -57,8 +65,8 @@ export default async function InboxPage({
         <InboxClient
           initialThreads={threads}
           initialContactId={initialContactId}
-          offHours={!withinSendWindow()}
-          windowLabel={sendWindowLabel()}
+          offHours={!withinSendWindow(new Date(), window)}
+          windowLabel={sendWindowLabel(window)}
         />
       )}
     </main>

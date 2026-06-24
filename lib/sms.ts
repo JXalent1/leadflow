@@ -85,10 +85,20 @@ export function isNonHumanName(name?: string | null): boolean {
 // The required opt-out suffix that MUST appear at the end of every message.
 const OPT_OUT_PHRASE = "Reply STOP to opt out.";
 
-// The APPROVED pilot opt-out line — Jordan's verbatim copy ends with NO trailing
-// period (the only text appended to his wording). Used by variant A. Carriers/CTIA
-// require a STOP keyword; the system only suppresses on STOP-family keywords.
-const PILOT_OPT_OUT = "Reply STOP to opt out";
+/**
+ * The approved Talan (client 1) message template — kept here as the TS-side source of truth for
+ * tests and as documentation. The SEEDED client row in db/schema.sql MUST match this exact string
+ * (the migration carries the same copy). In v2 the live template is read from the client record
+ * (clients.message_template), NOT this constant — but client 1's record equals this verbatim, so
+ * rendering is byte-identical to the v1 pilot.
+ *
+ * Convention: [NAME]/[ADDRESS]/[BIZ]/[ZIP] are merge placeholders. A {...} span is an OPTIONAL
+ * clause dropped only when keeping it would push the message past one GSM-7 segment (or when a
+ * placeholder inside it resolves empty). Talan's "{ at [ADDRESS]}" reproduces the v1 single-segment
+ * auto-fallback exactly: kept when it fits, dropped (with its leading " at ") when it doesn't.
+ */
+export const TALAN_MESSAGE_TEMPLATE =
+  "Hey [NAME] busy season is here, we are working close by if you were interested in window cleaning services{ at [ADDRESS]}. Reply STOP to opt out";
 
 /**
  * Title-cases a string: each whitespace-delimited token gets a leading capital and
@@ -106,86 +116,59 @@ function titleCase(value?: string | null): string {
 }
 
 /**
- * Renders an outbound SMS message.
+ * Renders an outbound SMS from a per-client TEMPLATE (clients.message_template) — v2 Module V1.
  *
- * Variant A is the APPROVED PILOT MESSAGE (session-6.md Task 0 / sms-copy.md) —
- * Jordan's exact wording, verbatim, with ONLY "Reply STOP to opt out" appended.
- * No business name, nothing else changed. The pilot runs single-variant (AB_VARIANTS=A),
- * so variant A is what actually sends:
- *   A: "Hey [NAME] busy season is here, we are working close by if you were interested in window cleaning services at [ADDRESS]. Reply STOP to opt out"
- *      → single-segment auto-fallback drops ONLY the "at [address]" clause when the
- *        with-address version would exceed one GSM-7 segment:
- *        "Hey [NAME] busy season is here, we are working close by if you were interested in window cleaning services. Reply STOP to opt out"
+ * The template is plain copy with merge placeholders and an optional droppable clause:
+ *  - [NAME]    → firstName, title-cased; falls back to "there" for blank/entity names, so
+ *               "Hey [NAME]" becomes "Hey there" (preserves the v1 fallback exactly).
+ *  - [ADDRESS] → contact.address, title-cased (county data is ALL CAPS → never sent caps).
+ *  - [BIZ]     → bizName (for branded clients; Talan's copy has no [BIZ]).
+ *  - [ZIP]     → contact.zip, or "your area" when missing.
+ *  - {...}     → an OPTIONAL clause. Kept when it fits one GSM-7 segment AND every placeholder
+ *               inside it resolved non-empty; otherwise the whole span (incl. its leading text,
+ *               e.g. " at ") is dropped. This reproduces Talan's single-segment auto-fallback:
+ *               the address clause stays when it fits and is dropped when it would overflow.
  *
- * Variants B and C are the original creative templates (sms-copy.md), kept for a
- * possible future A/B test. They are NOT used in the pilot.
- *   B: "Hey [NAME], it's [BIZ], a local window cleaning crew working in your area this week. Want a quick free quote? No obligation. Reply STOP to opt out."
- *   C: "Hi [NAME], [BIZ] here — we're doing window cleaning in [neighborhood] and have a couple openings this week. Want me to send a free quote? Reply STOP to opt out."
- *
- * Merge rules:
- *  - [NAME]              → firstName, title-cased (or fallback greeting — see below).
- *  - [ADDRESS]          → contact.address, title-cased (variant A only).
- *  - [BIZ]               → bizName (variants B/C only — the pilot copy has no biz name).
- *  - [ZIP/neighborhood]  → zip value (or "your area" if zip missing) (variants B/C).
- *
- * Non-human-name fallback:
- *  Variant A opens with "Hey [NAME]" — fallback becomes "Hey there".
- *  Variant C opens with "Hi [NAME]," — fallback becomes "Hi there,".
- *  Variant B opens with "Hey [NAME]," — fallback becomes "Hey there,".
- *
- * Hard requirement: every returned string MUST carry the "Reply STOP to opt out"
- * opt-out line (variant A omits the trailing period to stay verbatim to Jordan's copy).
+ * Hard requirement: every returned string MUST carry a "Reply STOP to opt out" line. Templates
+ * are expected to include it; the safety guard below appends OPT_OUT_PHRASE if one is ever missing.
  */
-export function renderMessage(
-  variant: Variant,
-  contact: Contact,
-  bizName: string
-): string {
-  const zip = contact.zip?.trim() || "your area";
+export function renderMessage(template: string, contact: Contact, bizName = ""): string {
   const useName =
     contact.firstName && !isNonHumanName(contact.firstName)
-      ? contact.firstName.trim()
-      : null;
+      ? titleCase(contact.firstName)
+      : "there";
+  const vals: Record<string, string> = {
+    "[NAME]": useName,
+    "[ADDRESS]": titleCase(contact.address),
+    "[BIZ]": bizName,
+    "[ZIP]": contact.zip?.trim() || "your area",
+  };
 
+  const subst = (s: string): string =>
+    s.replace(/\[NAME\]|\[ADDRESS\]|\[BIZ\]|\[ZIP\]/g, (m) => vals[m] ?? m);
+
+  // Split the optional {...} clause (at most one is supported, which covers every current template).
+  const clauseMatch = template.match(/\{([^}]*)\}/);
   let message: string;
-
-  switch (variant) {
-    case "A": {
-      // APPROVED PILOT COPY — Jordan's exact wording, verbatim. The ONLY addition is
-      // the "Reply STOP to opt out" line (no trailing period). Do NOT add a business
-      // name or change any other words. (session-6.md Task 0 / sms-copy.md.)
-      const greeting = useName ? `Hey ${titleCase(useName)}` : "Hey there";
-      const addr = titleCase(contact.address);
-      const withAddress = `${greeting} busy season is here, we are working close by if you were interested in window cleaning services at ${addr}. ${PILOT_OPT_OUT}`;
-      // Single-segment auto-fallback: drop ONLY the "at [address]" clause if the
-      // with-address version exceeds one GSM-7 segment (or no address is present),
-      // so no eligible contact is skipped for length.
-      if (addr && withinSingleSegment(withAddress)) {
-        message = withAddress;
-      } else {
-        message = `${greeting} busy season is here, we are working close by if you were interested in window cleaning services. ${PILOT_OPT_OUT}`;
-      }
-      break;
-    }
-    case "B": {
-      // Adapted from: "Hey [NAME], it's [BIZ], a local window cleaning crew working in your area this week. Want a quick free quote? No obligation. Reply STOP to opt out."
-      // Trimmed slightly to stay under 160 GSM-7 chars with a typical name+biz.
-      const greeting = useName ? `Hey ${useName},` : "Hey there,";
-      message = `${greeting} it's ${bizName}, a local window cleaning crew in your area this week. Want a free quote? No obligation. ${OPT_OUT_PHRASE}`;
-      break;
-    }
-    case "C": {
-      // Adapted from: "Hi [NAME], [BIZ] here — we're doing window cleaning in [neighborhood] and have a couple openings this week. Want me to send a free quote? Reply STOP to opt out."
-      // Em dash replaced with " -" (ASCII); copy trimmed to fit one segment.
-      const greeting = useName ? `Hi ${useName},` : "Hi there,";
-      message = `${greeting} ${bizName} here - we're doing window cleaning in ${zip} this week and have openings. Want a free quote? ${OPT_OUT_PHRASE}`;
-      break;
-    }
+  if (!clauseMatch) {
+    message = subst(template);
+  } else {
+    const rawClause = clauseMatch[1];
+    const full = subst(template.replace(/\{([^}]*)\}/, "$1"));
+    const dropped = subst(template.replace(/\{[^}]*\}/, ""));
+    // Drop the clause if a placeholder inside it resolved empty, or keeping it overflows a segment.
+    const clauseHasEmpty = Object.entries(vals).some(
+      ([k, v]) => v === "" && rawClause.includes(k)
+    );
+    message = clauseHasEmpty || !withinSingleSegment(full) ? dropped : full;
   }
 
-  // Safety assertion: if the opt-out phrase is somehow missing, append it. This
-  // should never trigger given the templates above, but is a hard guardrail. The
-  // trailing period is optional so variant A's verbatim (period-less) line passes.
+  // Collapse any double space left by a dropped placeholder, and tidy a stray space before
+  // punctuation, so output stays clean regardless of where a clause was removed.
+  message = message.replace(/ {2,}/g, " ").replace(/ +([.,!?])/g, "$1").trim();
+
+  // Safety guard: every message must carry the opt-out line. Trailing period optional so
+  // Talan's verbatim (period-less) "Reply STOP to opt out" passes unchanged.
   if (!/Reply STOP to opt out\.?$/.test(message)) {
     message = `${message.trimEnd()} ${OPT_OUT_PHRASE}`;
   }

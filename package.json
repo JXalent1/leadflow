@@ -10,10 +10,12 @@
     "schema": "tsx scripts/apply-schema.ts",
     "import": "tsx scripts/import-csv.ts",
     "trace": "tsx scripts/run-skiptrace.ts",
+    "ingest": "tsx scripts/ingest-trace-queue.ts",
     "scrub": "tsx scripts/run-scrub.ts",
     "smoke:tracerfy": "tsx scripts/smoke-tracerfy.ts",
     "smoke:twilio": "tsx scripts/smoke-twilio.ts",
     "smoke:webhook": "tsx scripts/smoke-webhook.ts",
+    "test:isolation": "tsx scripts/isolation-fixture.ts",
     "test": "tsx --test lib/*.test.ts"
   },
   "dependencies": {

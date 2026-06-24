@@ -10,10 +10,17 @@ if (!connectionString) {
 
 export const sql = neon(connectionString);
 
+// ---- Multi-tenant (v2 Module V1) -------------------------------------------
+// EVERY helper below takes a clientId and scopes its query by client_id — in the WHERE
+// for reads/updates and as a column on every INSERT. No query may read or write across
+// clients. The clientId is resolved per request (operator default = client 1; inbound
+// webhook = the client owning the To number) and threaded down from the caller.
+
 // ---- Types -----------------------------------------------------------------
 
 export interface Contact {
   id: number;
+  client_id: number;
   first_name: string | null;
   last_name: string | null;
   address: string;
@@ -43,22 +50,21 @@ export interface NewContact {
 export type MessageDirection = "outbound" | "inbound";
 
 // ---- Helpers ---------------------------------------------------------------
-// Signatures are stable so later sessions wire to them without renaming.
-// Some bodies are stubs until their owning session (noted inline).
 
 /**
- * Contacts eligible to be texted. (Session 3 — the single, load-bearing send gate.)
+ * Contacts eligible to be texted, for ONE client. (Session 3 — the single send gate.)
  *
- * Eligibility = phone present AND not suppressed (DNC/litigator/opt-out/no-match)
- * AND scrub_status='clean' (the scrub actually ran and passed — a matched-but-not-yet-
- * scrubbed contact is 'pending' and therefore NOT eligible) AND not already sent.
- * This is the only query that decides who can be texted — never relax it.
+ * Eligibility = same client AND phone present AND not suppressed AND scrub_status='clean'
+ * (the scrub ran and passed — a matched-but-unscrubbed contact is 'pending' → NOT eligible)
+ * AND not already sent. This is the only query that decides who can be texted — never relax
+ * it, and never drop the client_id scope (one client may never text another's contacts).
  */
-export async function getEligibleContacts(limit?: number): Promise<Contact[]> {
+export async function getEligibleContacts(clientId: number, limit?: number): Promise<Contact[]> {
   const rows = limit
     ? await sql`
         SELECT * FROM contacts
-        WHERE phone IS NOT NULL
+        WHERE client_id = ${clientId}
+          AND phone IS NOT NULL
           AND suppressed = false
           AND scrub_status = 'clean'
           AND send_status = 'not_sent'
@@ -67,7 +73,8 @@ export async function getEligibleContacts(limit?: number): Promise<Contact[]> {
       `
     : await sql`
         SELECT * FROM contacts
-        WHERE phone IS NOT NULL
+        WHERE client_id = ${clientId}
+          AND phone IS NOT NULL
           AND suppressed = false
           AND scrub_status = 'clean'
           AND send_status = 'not_sent'
@@ -80,12 +87,12 @@ export async function getEligibleContacts(limit?: number): Promise<Contact[]> {
  * Mark a contact's scrub verdict. (Session 3) 'clean' = scrub ran and passed (eligible);
  * 'flagged' = any DNC/litigator flag, suppression, or fail-closed error (never eligible).
  */
-export async function setScrubStatus(id: number, status: "clean" | "flagged"): Promise<void> {
-  await sql`
-    UPDATE contacts
-    SET scrub_status = ${status}
-    WHERE id = ${id}
-  `;
+export async function setScrubStatus(
+  clientId: number,
+  id: number,
+  status: "clean" | "flagged"
+): Promise<void> {
+  await sql`UPDATE contacts SET scrub_status = ${status} WHERE id = ${id} AND client_id = ${clientId}`;
 }
 
 /**
@@ -93,77 +100,79 @@ export async function setScrubStatus(id: number, status: "clean" | "flagged"): P
  * Conditionally flips not_sent -> sending in a single statement so a crash or a concurrent
  * re-run can never select the same contact twice. Returns true only if THIS call won the row.
  */
-export async function claimForSend(id: number): Promise<boolean> {
+export async function claimForSend(clientId: number, id: number): Promise<boolean> {
   const rows = await sql`
     UPDATE contacts
     SET send_status = 'sending'
-    WHERE id = ${id} AND send_status = 'not_sent'
+    WHERE id = ${id} AND client_id = ${clientId} AND send_status = 'not_sent'
     RETURNING id
   `;
   return rows.length > 0;
 }
 
 /** Record the assigned A/B variant for a contact. (Session 3) */
-export async function setVariant(id: number, variant: string): Promise<void> {
-  await sql`
-    UPDATE contacts
-    SET variant = ${variant}
-    WHERE id = ${id}
-  `;
+export async function setVariant(clientId: number, id: number, variant: string): Promise<void> {
+  await sql`UPDATE contacts SET variant = ${variant} WHERE id = ${id} AND client_id = ${clientId}`;
 }
 
 /** Set a contact's terminal send state after an attempt. (Session 3) */
 export async function setSendStatus(
+  clientId: number,
   id: number,
   status: "sent" | "failed" | "not_sent"
 ): Promise<void> {
-  await sql`
-    UPDATE contacts
-    SET send_status = ${status}
-    WHERE id = ${id}
-  `;
+  await sql`UPDATE contacts SET send_status = ${status} WHERE id = ${id} AND client_id = ${clientId}`;
 }
 
-/** Open a campaign run row; returns its id. (Session 3) */
-export async function createCampaignRun(totalEligible: number, note?: string): Promise<number> {
+/** Open a campaign run row for a client; returns its id. (Session 3) */
+export async function createCampaignRun(
+  clientId: number,
+  totalEligible: number,
+  note?: string
+): Promise<number> {
   const rows = await sql`
-    INSERT INTO campaign_runs (total_eligible, note)
-    VALUES (${totalEligible}, ${note ?? null})
+    INSERT INTO campaign_runs (client_id, total_eligible, note)
+    VALUES (${clientId}, ${totalEligible}, ${note ?? null})
     RETURNING id
   `;
   return (rows[0] as { id: number }).id;
 }
 
 /** Update a campaign run's sent tally / note and stamp finished_at when the batch ends. (Session 3) */
-export async function finishCampaignRun(id: number, sentCount: number, note?: string): Promise<void> {
+export async function finishCampaignRun(
+  clientId: number,
+  id: number,
+  sentCount: number,
+  note?: string
+): Promise<void> {
   await sql`
     UPDATE campaign_runs
     SET sent_count = ${sentCount}, note = ${note ?? null}, finished_at = now()
-    WHERE id = ${id}
+    WHERE id = ${id} AND client_id = ${clientId}
   `;
 }
 
 /**
- * Is a campaign run currently in flight? (Session 3 review — concurrent-run guard.)
- * A run is "active" if finished_at IS NULL and it started within `withinMinutes`
- * (default 6, just above the 5-min function maxDuration) — older unfinished rows are
- * treated as dead (the function timed out without stamping finished_at) so a crash
- * never blocks future runs forever. Not a perfect mutex (the HTTP driver is stateless,
- * so two near-simultaneous POSTs can both pass) — the atomic per-contact claim is the
- * real no-double-text guarantee; this just stops casual concurrent runs from defeating pacing.
+ * Is a campaign run currently in flight FOR THIS CLIENT? (Session 3 review — concurrent-run
+ * guard.) "Active" = finished_at IS NULL and started within `withinMinutes` (default 6, just
+ * above the 5-min function maxDuration) — older unfinished rows are treated as dead so a crash
+ * never blocks future runs forever. Scoped per client so one client's run can't block another's.
+ * Not a perfect mutex (stateless HTTP driver); the atomic per-contact claim is the real
+ * no-double-text guarantee — this just stops casual concurrent runs from defeating pacing.
  */
-export async function hasActiveCampaignRun(withinMinutes = 6): Promise<boolean> {
+export async function hasActiveCampaignRun(clientId: number, withinMinutes = 6): Promise<boolean> {
   const rows = await sql`
     SELECT 1 FROM campaign_runs
-    WHERE finished_at IS NULL
+    WHERE client_id = ${clientId}
+      AND finished_at IS NULL
       AND started_at > now() - make_interval(mins => ${withinMinutes})
     LIMIT 1
   `;
   return rows.length > 0;
 }
 
-/** Send-path progress for the GET endpoint + dashboard. (Session 3) */
-export async function getSendProgress(): Promise<{
+/** Send-path progress for one client. (Session 3) */
+export async function getSendProgress(clientId: number): Promise<{
   eligible: number;
   sent: number;
   pending: number;
@@ -190,6 +199,7 @@ export async function getSendProgress(): Promise<{
       COUNT(*) FILTER (WHERE send_status = 'failed')::int             AS failed,
       COUNT(*) FILTER (WHERE suppressed = true)::int                  AS suppressed
     FROM contacts
+    WHERE client_id = ${clientId}
   `;
   const r = rows[0] as {
     eligible: number;
@@ -199,63 +209,72 @@ export async function getSendProgress(): Promise<{
     failed: number;
     suppressed: number;
   };
-  const optRows = await sql`SELECT COUNT(*)::int AS opted_out FROM opt_outs`;
+  const optRows = await sql`SELECT COUNT(*)::int AS opted_out FROM opt_outs WHERE client_id = ${clientId}`;
   const opted_out = (optRows[0] as { opted_out: number }).opted_out;
   return { ...r, opted_out };
 }
 
-/** Insert one contact. Returns the new id. Used by the CSV importer (Session 1). */
-export async function insertContact(c: NewContact): Promise<number> {
+/** Insert one contact for a client. Returns the new id. Used by the CSV importer (Session 1). */
+export async function insertContact(clientId: number, c: NewContact): Promise<number> {
   const rows = await sql`
-    INSERT INTO contacts (first_name, last_name, address, city, state, zip)
-    VALUES (${c.first_name}, ${c.last_name}, ${c.address}, ${c.city}, ${c.state}, ${c.zip})
+    INSERT INTO contacts (client_id, first_name, last_name, address, city, state, zip)
+    VALUES (${clientId}, ${c.first_name}, ${c.last_name}, ${c.address}, ${c.city}, ${c.state}, ${c.zip})
     RETURNING id
   `;
   return (rows[0] as { id: number }).id;
 }
 
 /** Flag a contact as suppressed with a reason. (Sessions 2 & 4) */
-export async function markSuppressed(id: number, reason: string): Promise<void> {
+export async function markSuppressed(clientId: number, id: number, reason: string): Promise<void> {
   await sql`
     UPDATE contacts
     SET suppressed = true, suppress_reason = ${reason}
-    WHERE id = ${id}
+    WHERE id = ${id} AND client_id = ${clientId}
   `;
 }
 
-/** Contacts still needing a skip trace. Idempotency hinges on this filter. (Session 2) */
-export async function getContactsForSkiptrace(limit?: number): Promise<Contact[]> {
+/** Contacts still needing a skip trace, for a client. Idempotency hinges on this filter. (Session 2) */
+export async function getContactsForSkiptrace(clientId: number, limit?: number): Promise<Contact[]> {
   const rows = limit
     ? await sql`
         SELECT * FROM contacts
-        WHERE skiptrace_status = 'pending'
+        WHERE client_id = ${clientId} AND skiptrace_status = 'pending'
         ORDER BY id
         LIMIT ${limit}
       `
     : await sql`
         SELECT * FROM contacts
-        WHERE skiptrace_status = 'pending'
+        WHERE client_id = ${clientId} AND skiptrace_status = 'pending'
         ORDER BY id
       `;
   return rows as Contact[];
 }
 
-/** Matched contacts with a phone that have not yet been suppressed. (Session 2 scrub) */
-export async function getContactsForScrub(limit?: number): Promise<Contact[]> {
+/**
+ * Matched contacts with a phone that still need scrubbing, for a client. (Session 2 scrub.)
+ * scrub_status='pending' is LOAD-BEARING for credit safety: a clean contact keeps
+ * suppressed=false, so without this filter it would be re-selected + re-billed every chunk
+ * (the 2026-06-23 re-billing bug). Already-scrubbed (clean OR flagged) rows are excluded.
+ */
+export async function getContactsForScrub(clientId: number, limit?: number): Promise<Contact[]> {
   const rows = limit
     ? await sql`
         SELECT * FROM contacts
-        WHERE skiptrace_status = 'matched'
+        WHERE client_id = ${clientId}
+          AND skiptrace_status = 'matched'
           AND phone IS NOT NULL
           AND suppressed = false
+          AND scrub_status = 'pending'
         ORDER BY id
         LIMIT ${limit}
       `
     : await sql`
         SELECT * FROM contacts
-        WHERE skiptrace_status = 'matched'
+        WHERE client_id = ${clientId}
+          AND skiptrace_status = 'matched'
           AND phone IS NOT NULL
           AND suppressed = false
+          AND scrub_status = 'pending'
         ORDER BY id
       `;
   return rows as Contact[];
@@ -266,6 +285,7 @@ export async function getContactsForScrub(limit?: number): Promise<Contact[]> {
  * A no-match writes phone null + status 'no_match'; the route also suppresses it.
  */
 export async function setTraceResult(
+  clientId: number,
   id: number,
   result: { phone: string | null; phoneType: string | null; status: "matched" | "no_match" }
 ): Promise<void> {
@@ -274,13 +294,14 @@ export async function setTraceResult(
     SET phone = ${result.phone},
         phone_type = ${result.phoneType},
         skiptrace_status = ${result.status}
-    WHERE id = ${id}
+    WHERE id = ${id} AND client_id = ${clientId}
   `;
 }
 
-/** Log an outbound or inbound message. (Sessions 3 & 4) */
+/** Log an outbound or inbound message for a client. (Sessions 3 & 4) */
 // contactId is nullable so an orphan inbound / its confirmation can still be logged.
 export async function recordMessage(args: {
+  clientId: number;
   contactId: number | null;
   direction: MessageDirection;
   body: string;
@@ -288,8 +309,8 @@ export async function recordMessage(args: {
   status?: string | null;
 }): Promise<number> {
   const rows = await sql`
-    INSERT INTO messages (contact_id, direction, body, twilio_sid, status)
-    VALUES (${args.contactId}, ${args.direction}, ${args.body},
+    INSERT INTO messages (client_id, contact_id, direction, body, twilio_sid, status)
+    VALUES (${args.clientId}, ${args.contactId}, ${args.direction}, ${args.body},
             ${args.twilioSid ?? null}, ${args.status ?? null})
     RETURNING id
   `;
@@ -297,41 +318,41 @@ export async function recordMessage(args: {
 }
 
 /**
- * Log an INBOUND message exactly once, keyed on twilio_sid. (Session 4 — idempotency.)
+ * Log an INBOUND message exactly once PER CLIENT, keyed on twilio_sid. (Session 4 — idempotency.)
  *
- * Uses INSERT ... ON CONFLICT DO NOTHING against the partial unique index on
- * messages(twilio_sid) so a Twilio webhook retry (same MessageSid) is a no-op.
- * Returns the new message id, or null if this SID was already logged — the webhook
- * treats null as "duplicate, stop" so no opt-out / lead / forward is double-applied.
+ * Uses INSERT ... ON CONFLICT DO NOTHING against the per-client partial unique index on
+ * messages(client_id, twilio_sid) so a Twilio webhook retry (same MessageSid) is a no-op within
+ * the owning client. Returns the new message id, or null if this SID was already logged for this
+ * client — the webhook treats null as "duplicate, stop" so no opt-out / lead / forward repeats.
  */
 export async function logInboundOnce(args: {
+  clientId: number;
   contactId: number | null;
   body: string;
   twilioSid: string;
 }): Promise<number | null> {
   const rows = await sql`
-    INSERT INTO messages (contact_id, direction, body, twilio_sid)
-    VALUES (${args.contactId}, 'inbound', ${args.body}, ${args.twilioSid})
-    ON CONFLICT (twilio_sid) WHERE twilio_sid IS NOT NULL DO NOTHING
+    INSERT INTO messages (client_id, contact_id, direction, body, twilio_sid)
+    VALUES (${args.clientId}, ${args.contactId}, 'inbound', ${args.body}, ${args.twilioSid})
+    ON CONFLICT (client_id, twilio_sid) WHERE twilio_sid IS NOT NULL DO NOTHING
     RETURNING id
   `;
   return rows.length ? (rows[0] as { id: number }).id : null;
 }
 
 /**
- * Find a contact by inbound sender phone. (Session 4.) The argument is the
- * normalized last-10 digits (normalizePhone); we compare against the stored phone
- * reduced to its last 10 digits too, so formatting differences never miss a match.
+ * Find a contact by inbound sender phone, WITHIN one client. (Session 4.) The argument is the
+ * normalized last-10 digits (normalizePhone); we compare against the stored phone reduced to
+ * its last 10 digits too, so formatting differences never miss a match. Scoped to client_id so
+ * an inbound to client A's number can never match (and then suppress/forward) client B's contact.
  */
-export async function findContactByPhone(phone: string): Promise<Contact | null> {
+export async function findContactByPhone(clientId: number, phone: string): Promise<Contact | null> {
   if (!phone) return null;
-  // NOTE: '[^0-9]', not '\D'. A JS template literal cooks '\D' down to 'D' (the backslash is
-  // dropped for unrecognized escapes) and neon's sql tag sends the cooked text, so '\D' would
-  // strip literal 'D's instead of non-digits. '[^0-9]' has no backslash and is unambiguous in
-  // Postgres. (Today stored phones are already last-10 digits, but this keeps the match honest.)
+  // NOTE: '[^0-9]', not '\D'. A JS template literal cooks '\D' down to 'D', so '[^0-9]' is used.
   const rows = await sql`
     SELECT * FROM contacts
-    WHERE phone IS NOT NULL
+    WHERE client_id = ${clientId}
+      AND phone IS NOT NULL
       AND right(regexp_replace(phone, '[^0-9]', '', 'g'), 10) = ${phone}
     ORDER BY id
     LIMIT 1
@@ -340,44 +361,47 @@ export async function findContactByPhone(phone: string): Promise<Contact | null>
 }
 
 /**
- * Record a STOP/unsubscribe event. (Session 4.) contactId may be null for an
- * opt-out from a number we have no contact row for — we still keep the phone on
- * permanent record. The caller also sets contacts.suppressed when a contact matched.
+ * Record a STOP/unsubscribe event for a client. (Session 4.) contactId may be null for an
+ * opt-out from a number we have no contact row for — we still keep the phone on permanent
+ * record. Idempotent on (client_id, phone) so a Twilio retry's recovery path never duplicates.
  */
-export async function recordOptOut(contactId: number | null, phone: string): Promise<void> {
-  // Idempotent on phone (ON CONFLICT against the unique index) so a Twilio retry's
-  // suppression-recovery path (see lib/inbound.ts) never writes a duplicate opt-out row.
+export async function recordOptOut(
+  clientId: number,
+  contactId: number | null,
+  phone: string
+): Promise<void> {
   await sql`
-    INSERT INTO opt_outs (contact_id, phone)
-    VALUES (${contactId}, ${phone})
-    ON CONFLICT (phone) DO NOTHING
+    INSERT INTO opt_outs (client_id, contact_id, phone)
+    VALUES (${clientId}, ${contactId}, ${phone})
+    ON CONFLICT (client_id, phone) DO NOTHING
   `;
 }
 
-/** Mark a lead as forwarded to Talan (the SMS ping succeeded). (Session 4.) */
-export async function markLeadForwarded(leadId: number): Promise<void> {
+/** Mark a lead as forwarded to the client contact (the SMS ping succeeded). (Session 4.) */
+export async function markLeadForwarded(clientId: number, leadId: number): Promise<void> {
   await sql`
     UPDATE leads
     SET forwarded = true, forwarded_at = now()
-    WHERE id = ${leadId}
+    WHERE id = ${leadId} AND client_id = ${clientId}
   `;
 }
 
-/** Create a lead from an interested reply. (Session 4) */
+/** Create a lead from an interested reply, for a client. (Session 4) */
 export async function createLead(args: {
+  clientId: number;
   contactId: number;
   replyText: string;
 }): Promise<number> {
   const rows = await sql`
-    INSERT INTO leads (contact_id, reply_text)
-    VALUES (${args.contactId}, ${args.replyText})
+    INSERT INTO leads (client_id, contact_id, reply_text)
+    VALUES (${args.clientId}, ${args.contactId}, ${args.replyText})
     RETURNING id
   `;
   return (rows[0] as { id: number }).id;
 }
 
-/** Dashboard counts for the admin stub. (Session 1) */
-export async function getContactCounts(): Promise<{
+/** Dashboard counts for one client. (Session 1) */
+export async function getContactCounts(clientId: number): Promise<{
   total: number;
   withPhone: number;
   suppressed: number;
@@ -388,105 +412,8 @@ export async function getContactCounts(): Promise<{
       COUNT(*) FILTER (WHERE phone IS NOT NULL)::int         AS with_phone,
       COUNT(*) FILTER (WHERE suppressed = true)::int         AS suppressed
     FROM contacts
+    WHERE client_id = ${clientId}
   `;
   const r = rows[0] as { total: number; with_phone: number; suppressed: number };
   return { total: r.total, withPhone: r.with_phone, suppressed: r.suppressed };
-}
-
-// ---------------------------------------------------------------------------
-// Dashboard read helpers (Session 5 — Module 5). READ-ONLY: every query below
-// is a SELECT. No mutation logic lives here; the dashboard's buttons call the
-// existing /api/{skiptrace,scrub,campaign} endpoints for any write.
-// ---------------------------------------------------------------------------
-
-/** A lead joined to its contact, for the dashboard's primary leads table. */
-export interface LeadRow {
-  id: number;
-  contact_id: number | null;
-  first_name: string | null;
-  last_name: string | null;
-  address: string | null;
-  phone: string | null;
-  reply_text: string | null;
-  forwarded: boolean;
-  forwarded_at: string | null;
-  status: string;
-  created_at: string;
-}
-
-/** An inbound message joined to its contact, for the reply feed. */
-export interface InboundRow {
-  id: number;
-  contact_id: number | null;
-  first_name: string | null;
-  last_name: string | null;
-  phone: string | null;
-  body: string;
-  created_at: string;
-}
-
-/** An opt-out joined to its contact (if any), for the opt-out list. */
-export interface OptOutRow {
-  id: number;
-  phone: string;
-  first_name: string | null;
-  last_name: string | null;
-  created_at: string;
-}
-
-/** Extra count cards not covered by getContactCounts/getSendProgress. */
-export async function getDashboardExtraCounts(): Promise<{
-  scrubbedClean: number;
-  leads: number;
-}> {
-  const rows = await sql`
-    SELECT
-      (SELECT COUNT(*) FROM contacts WHERE scrub_status = 'clean')::int AS scrubbed_clean,
-      (SELECT COUNT(*) FROM leads)::int                                 AS leads
-  `;
-  const r = rows[0] as { scrubbed_clean: number; leads: number };
-  return { scrubbedClean: r.scrubbed_clean, leads: r.leads };
-}
-
-/** Most-recent leads joined to their contact (name, address, phone). Newest first. */
-export async function getRecentLeads(limit = 50): Promise<LeadRow[]> {
-  const rows = await sql`
-    SELECT
-      l.id, l.contact_id, l.reply_text, l.forwarded, l.forwarded_at, l.status, l.created_at,
-      c.first_name, c.last_name, c.address, c.phone
-    FROM leads l
-    LEFT JOIN contacts c ON c.id = l.contact_id
-    ORDER BY l.created_at DESC, l.id DESC
-    LIMIT ${limit}
-  `;
-  return rows as LeadRow[];
-}
-
-/** Most-recent inbound messages joined to their contact. Newest first. */
-export async function getRecentInbound(limit = 50): Promise<InboundRow[]> {
-  const rows = await sql`
-    SELECT
-      m.id, m.contact_id, m.body, m.created_at,
-      c.first_name, c.last_name, c.phone
-    FROM messages m
-    LEFT JOIN contacts c ON c.id = m.contact_id
-    WHERE m.direction = 'inbound'
-    ORDER BY m.created_at DESC, m.id DESC
-    LIMIT ${limit}
-  `;
-  return rows as InboundRow[];
-}
-
-/** Most-recent opt-outs joined to their contact (if matched). Newest first. */
-export async function getRecentOptOuts(limit = 50): Promise<OptOutRow[]> {
-  const rows = await sql`
-    SELECT
-      o.id, o.phone, o.created_at,
-      c.first_name, c.last_name
-    FROM opt_outs o
-    LEFT JOIN contacts c ON c.id = o.contact_id
-    ORDER BY o.created_at DESC, o.id DESC
-    LIMIT ${limit}
-  `;
-  return rows as OptOutRow[];
 }

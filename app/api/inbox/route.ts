@@ -9,6 +9,7 @@
 
 import { NextResponse } from "next/server";
 import { isAuthed } from "@/app/actions";
+import { clientIdFromRequest } from "@/lib/request-client";
 import { getInboxThreads, getThread } from "@/lib/inbox-db";
 
 export const dynamic = "force-dynamic";
@@ -19,6 +20,7 @@ export async function GET(req: Request) {
       return NextResponse.json({ error: "unauthorized" }, { status: 401 });
     }
 
+    const clientId = clientIdFromRequest(req);
     const { searchParams } = new URL(req.url);
     const contactIdRaw = searchParams.get("contactId");
 
@@ -27,14 +29,14 @@ export async function GET(req: Request) {
       if (!Number.isInteger(contactId) || contactId <= 0) {
         return NextResponse.json({ error: "invalid_contact_id" }, { status: 400 });
       }
-      const thread = await getThread(contactId);
+      const thread = await getThread(clientId, contactId);
       if (!thread) {
         return NextResponse.json({ error: "thread_not_found" }, { status: 404 });
       }
       return NextResponse.json({ thread });
     }
 
-    const threads = await getInboxThreads();
+    const threads = await getInboxThreads(clientId);
     return NextResponse.json({ threads });
   } catch (err) {
     console.error("[inbox] read failed:", err instanceof Error ? err.message : String(err));

@@ -14,12 +14,20 @@
 
 import { sendOne } from "@/lib/twilio";
 import { markLeadForwarded } from "@/lib/db";
+import { DEFAULT_CLIENT_ID } from "@/lib/clients";
 import type { InboundContactLite } from "@/lib/inbound";
 
 export interface ForwardLeadArgs {
   contact: InboundContactLite;
   leadId: number;
   replyText: string;
+}
+
+/** Per-client forward config (from the client record): where to ping + which sender to use. */
+export interface ForwardConfig {
+  clientId: number;
+  forwardPhone: string | null;
+  sender: { messagingServiceSid: string } | { from: string };
 }
 
 /** Full name from the contact, or a sensible fallback for the ping. */
@@ -51,17 +59,26 @@ export function buildLeadPing(c: InboundContactLite, replyText: string): string 
  * On a successful send, marks the lead forwarded. On any failure, logs and returns false —
  * the lead stays on the dashboard with forwarded=false. Never throws.
  */
-export async function forwardLead({ contact, leadId, replyText }: ForwardLeadArgs): Promise<boolean> {
-  const to = process.env.TALAN_FORWARD_PHONE?.trim();
+export async function forwardLead(
+  { contact, leadId, replyText }: ForwardLeadArgs,
+  cfg: ForwardConfig
+): Promise<boolean> {
+  // The lead ping goes to the client's forward_phone. For the DEFAULT client (Talan), fall back
+  // to the legacy TALAN_FORWARD_PHONE env var when the record's forward_phone is unset, so v1
+  // behavior is preserved exactly (the real number is a secret and can't live in committed SQL).
+  // The fallback is scoped to client 1 ONLY so it can never leak Talan's number to another client.
+  const to =
+    cfg.forwardPhone?.trim() ||
+    (cfg.clientId === DEFAULT_CLIENT_ID ? process.env.TALAN_FORWARD_PHONE?.trim() : undefined);
   if (!to) {
-    console.error(`[forward] TALAN_FORWARD_PHONE not set — lead ${leadId} not pinged (still on dashboard).`);
+    console.error(`[forward] client ${cfg.clientId} has no forward_phone — lead ${leadId} not pinged (still on dashboard).`);
     return false;
   }
 
   try {
-    const res = await sendOne(to, buildLeadPing(contact, replyText));
+    const res = await sendOne(to, buildLeadPing(contact, replyText), cfg.sender);
     if (res.ok) {
-      await markLeadForwarded(leadId);
+      await markLeadForwarded(cfg.clientId, leadId);
       return true;
     }
     // sendOne returns a typed failure rather than throwing; never logs the token.

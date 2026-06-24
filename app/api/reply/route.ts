@@ -18,6 +18,8 @@
 import { NextResponse } from "next/server";
 import { isAuthed } from "@/app/actions";
 import { recordMessage } from "@/lib/db";
+import { resolveClient } from "@/lib/request-client";
+import { clientSender } from "@/lib/clients";
 import { getContactById, isPhoneOptedOut } from "@/lib/inbox-db";
 import { sendOne } from "@/lib/twilio";
 import { replyRefusalReason } from "@/lib/reply";
@@ -31,6 +33,14 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "unauthorized" }, { status: 401 });
     }
 
+    // Resolve the operator's selected client — the reply sends from this client's number and is
+    // gated only by this client's suppression/opt-outs (never another client's records).
+    const client = await resolveClient(req);
+    if (!client) {
+      return NextResponse.json({ error: "client_not_found" }, { status: 404 });
+    }
+    const clientId = client.id;
+
     const body = await req.json().catch(() => ({}));
     const contactId = Number(body?.contactId);
     const text = typeof body?.body === "string" ? body.body : "";
@@ -42,13 +52,13 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "empty_body" }, { status: 400 });
     }
 
-    // Load the contact — the ONLY source of the destination number. We never honor a
-    // phone supplied in the request.
-    const contact = await getContactById(contactId);
+    // Load the contact WITHIN this client — the ONLY source of the destination number. We never
+    // honor a phone supplied in the request, and a contactId from another client won't resolve.
+    const contact = await getContactById(clientId, contactId);
 
     // Suppression gate (fail closed): refuse if not found, no phone, suppressed flag set,
-    // or a permanent opt-out record exists. Decision lives in the pure replyRefusalReason.
-    const optedOut = contact?.phone ? await isPhoneOptedOut(contact.phone) : true;
+    // or a permanent opt-out record exists (this client's). Decision lives in replyRefusalReason.
+    const optedOut = contact?.phone ? await isPhoneOptedOut(clientId, contact.phone) : true;
     const refusal = replyRefusalReason(contact, optedOut);
     if (refusal) {
       return NextResponse.json({ error: refusal }, { status: 422 });
@@ -56,12 +66,14 @@ export async function POST(req: Request) {
     // After the gate, contact + contact.phone are guaranteed present.
     const phone = contact!.phone as string;
 
-    // Passed the gate — send only to the stored phone (never a request-supplied number).
-    const res = await sendOne(phone, text);
+    // Passed the gate — send only to the stored phone (never a request-supplied number),
+    // from this client's Twilio sender.
+    const res = await sendOne(phone, text, clientSender(client));
 
     if (!res.ok) {
       // Log the failed attempt (null sid, status 'failed') so it still appears in the thread.
       await recordMessage({
+        clientId,
         contactId,
         direction: "outbound",
         body: text,
@@ -73,6 +85,7 @@ export async function POST(req: Request) {
     }
 
     const messageId = await recordMessage({
+      clientId,
       contactId,
       direction: "outbound",
       body: text,

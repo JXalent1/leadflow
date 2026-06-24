@@ -1,6 +1,11 @@
 /**
  * lib/sms.test.ts — Unit tests for lib/sms.ts
  * Run via: npm test  (tsx --test lib/*.test.ts)
+ *
+ * v2: renderMessage is now TEMPLATE-driven (renderMessage(template, contact, bizName)). The
+ * Talan (client 1) assertions use TALAN_MESSAGE_TEMPLATE and are the regression proof that
+ * client 1's copy is byte-identical to the v1 pilot. Generic-template tests prove the renderer
+ * substitutes placeholders + honors the {...} optional clause for ANY client's template.
  */
 
 import { test } from "node:test";
@@ -12,6 +17,7 @@ import {
   isNonHumanName,
   segmentInfo,
   withinSingleSegment,
+  TALAN_MESSAGE_TEMPLATE,
 } from "./sms";
 
 // ---------------------------------------------------------------------------
@@ -65,227 +71,120 @@ test("isNonHumanName: all-caps multi-word entity strings → true", () => {
 });
 
 test("isNonHumanName: single-character token → true", () => {
-  // Single character is not a real first name
   assert.equal(isNonHumanName("A"), true);
   assert.equal(isNonHumanName("X"), true);
 });
 
 // ---------------------------------------------------------------------------
-// renderMessage — opt-out phrase presence (hard requirement)
+// renderMessage — Talan (client 1) template: byte-identical to the v1 pilot
 // ---------------------------------------------------------------------------
 
-// Period-insensitive opt-out line: variant A (Jordan's verbatim pilot copy) ends
-// without a trailing period; variants B/C end with one. Both must carry this line.
-const OPT_OUT_CORE = "Reply STOP to opt out";
+const TALAN = TALAN_MESSAGE_TEMPLATE;
 const TYPICAL_CONTACT = { firstName: "James", zip: "32301", address: "123 Main St" };
 const NULL_CONTACT = { firstName: null as null, zip: "32301", address: "123 Main St" };
 const ENTITY_CONTACT = { firstName: "ACME LLC", zip: "32301", address: "123 Main St" };
-const NO_ZIP_CONTACT = { firstName: "James", zip: null as null, address: "123 Main St" };
 const BIZ = "Talan's Window Cleaning";
 
-const VARIANTS = ["A", "B", "C"] as const;
-
-// Matches the opt-out line whether or not it ends in a period, anchored to end of string.
-const OPT_OUT_AT_END = /Reply STOP to opt out\.?$/;
-
-test("renderMessage: every variant with normal name carries the opt-out line at the end", () => {
-  for (const v of VARIANTS) {
-    const msg = renderMessage(v, TYPICAL_CONTACT, BIZ);
-    assert.ok(
-      OPT_OUT_AT_END.test(msg),
-      `Variant ${v} with normal name should end with "${OPT_OUT_CORE}" — got: "${msg}"`
-    );
+test("renderMessage (Talan): normal/null/entity names all carry the opt-out line at the end", () => {
+  for (const c of [TYPICAL_CONTACT, NULL_CONTACT, ENTITY_CONTACT]) {
+    const msg = renderMessage(TALAN, c, BIZ);
+    assert.ok(/Reply STOP to opt out\.?$/.test(msg), `missing opt-out line — got: "${msg}"`);
   }
 });
 
-test("renderMessage: every variant with null name carries the opt-out line at the end", () => {
-  for (const v of VARIANTS) {
-    const msg = renderMessage(v, NULL_CONTACT, BIZ);
-    assert.ok(
-      OPT_OUT_AT_END.test(msg),
-      `Variant ${v} with null name should end with "${OPT_OUT_CORE}" — got: "${msg}"`
-    );
+test("renderMessage (Talan): no leftover merge brackets or braces", () => {
+  for (const c of [TYPICAL_CONTACT, NULL_CONTACT, ENTITY_CONTACT, { firstName: "James", zip: null, address: "123 Main St" }]) {
+    const msg = renderMessage(TALAN, c, BIZ);
+    assert.ok(!msg.includes("["), `unresolved "[" in: "${msg}"`);
+    assert.ok(!msg.includes("{") && !msg.includes("}"), `leftover clause brace in: "${msg}"`);
   }
 });
 
-test("renderMessage: every variant with entity name carries the opt-out line at the end", () => {
-  for (const v of VARIANTS) {
-    const msg = renderMessage(v, ENTITY_CONTACT, BIZ);
-    assert.ok(
-      OPT_OUT_AT_END.test(msg),
-      `Variant ${v} with entity name should end with "${OPT_OUT_CORE}" — got: "${msg}"`
-    );
-  }
+test("renderMessage (Talan): normal name → 'Hey James busy season...'", () => {
+  const msg = renderMessage(TALAN, TYPICAL_CONTACT, BIZ);
+  assert.ok(msg.startsWith("Hey James busy season is here,"), `got: "${msg}"`);
 });
 
-// ---------------------------------------------------------------------------
-// renderMessage — no leftover merge brackets
-// ---------------------------------------------------------------------------
-
-test("renderMessage: no leftover merge brackets for all variant × name combos", () => {
-  const contacts = [TYPICAL_CONTACT, NULL_CONTACT, ENTITY_CONTACT, NO_ZIP_CONTACT];
-  for (const v of VARIANTS) {
-    for (const c of contacts) {
-      const msg = renderMessage(v, c, BIZ);
-      assert.ok(
-        !msg.includes("["),
-        `Variant ${v} left an unresolved bracket "[" in: "${msg}"`
-      );
-    }
-  }
+test("renderMessage (Talan): null name → 'Hey there busy season...'", () => {
+  const msg = renderMessage(TALAN, NULL_CONTACT, BIZ);
+  assert.ok(msg.startsWith("Hey there busy season is here,"), `got: "${msg}"`);
 });
 
-// ---------------------------------------------------------------------------
-// renderMessage — greeting fallback
-// ---------------------------------------------------------------------------
-
-test("renderMessage variant A (pilot): normal name → 'Hey James busy season...'", () => {
-  const msg = renderMessage("A", TYPICAL_CONTACT, BIZ);
-  assert.ok(
-    msg.startsWith("Hey James busy season is here,"),
-    `Expected pilot opener for 'James', got: "${msg}"`
-  );
+test("renderMessage (Talan): entity name → 'Hey there' (not 'Hey ACME LLC')", () => {
+  const msg = renderMessage(TALAN, ENTITY_CONTACT, BIZ);
+  assert.ok(msg.startsWith("Hey there busy season is here,"), `got: "${msg}"`);
+  assert.ok(!msg.includes("ACME LLC"), `entity name leaked: "${msg}"`);
 });
 
-test("renderMessage variant A (pilot): null name → 'Hey there busy season...'", () => {
-  const msg = renderMessage("A", NULL_CONTACT, BIZ);
-  assert.ok(
-    msg.startsWith("Hey there busy season is here,"),
-    `Expected 'Hey there' fallback opener, got: "${msg}"`
-  );
+test("renderMessage (Talan): title-cases ALL-CAPS name and address", () => {
+  const msg = renderMessage(TALAN, { firstName: "ROBERT", zip: "32317", address: "7445 BUCK LAKE RD" }, BIZ);
+  assert.ok(msg.startsWith("Hey Robert busy season"), `name not title-cased: "${msg}"`);
+  assert.ok(msg.includes("at 7445 Buck Lake Rd."), `address not title-cased: "${msg}"`);
+  assert.ok(!/[A-Z]{2,}/.test(msg.replace("STOP", "")), `leftover all-caps (besides STOP): "${msg}"`);
 });
 
-test("renderMessage variant A (pilot): entity name → 'Hey there' (not 'Hey ACME LLC')", () => {
-  const msg = renderMessage("A", ENTITY_CONTACT, BIZ);
-  assert.ok(
-    msg.startsWith("Hey there busy season is here,"),
-    `Expected 'Hey there' fallback opener, got: "${msg}"`
-  );
-  assert.ok(!msg.includes("ACME LLC"), `Entity name must not appear in greeting, got: "${msg}"`);
+test("renderMessage (Talan): contains no business name", () => {
+  const msg = renderMessage(TALAN, TYPICAL_CONTACT, BIZ);
+  assert.ok(!msg.includes(BIZ), `pilot copy must not contain the business name: "${msg}"`);
+  assert.ok(!msg.toLowerCase().includes("talan"), `pilot copy must not name the business: "${msg}"`);
 });
 
-test("renderMessage variant A (pilot): title-cases ALL-CAPS name and address", () => {
-  const msg = renderMessage("A", { firstName: "ROBERT", zip: "32317", address: "7445 BUCK LAKE RD" }, BIZ);
-  assert.ok(msg.startsWith("Hey Robert busy season"), `Name not title-cased, got: "${msg}"`);
-  assert.ok(msg.includes("at 7445 Buck Lake Rd."), `Address not title-cased, got: "${msg}"`);
-  assert.ok(!/[A-Z]{2,}/.test(msg.replace("STOP", "")), `Leftover all-caps token (besides STOP), got: "${msg}"`);
+test("renderMessage (Talan): ends verbatim with 'Reply STOP to opt out' (no period)", () => {
+  const msg = renderMessage(TALAN, TYPICAL_CONTACT, BIZ);
+  assert.ok(msg.endsWith("Reply STOP to opt out"), `got: "${msg}"`);
 });
 
-test("renderMessage variant A (pilot): contains no business name", () => {
-  const msg = renderMessage("A", TYPICAL_CONTACT, BIZ);
-  assert.ok(!msg.includes(BIZ), `Pilot copy must not contain the business name, got: "${msg}"`);
-  assert.ok(!msg.toLowerCase().includes("talan"), `Pilot copy must not name the business, got: "${msg}"`);
-});
-
-test("renderMessage variant A (pilot): ends verbatim with 'Reply STOP to opt out' (no period)", () => {
-  const msg = renderMessage("A", TYPICAL_CONTACT, BIZ);
-  assert.ok(
-    msg.endsWith("Reply STOP to opt out"),
-    `Variant A must end with the verbatim period-less opt-out line, got: "${msg}"`
-  );
-});
-
-test("renderMessage variant A (pilot): drops only the address clause when over one segment", () => {
-  // Force overflow with an absurdly long address; the fallback must drop the "at ..."
-  // clause, keep the rest verbatim, and remain a single segment.
+test("renderMessage (Talan): drops only the address clause when over one segment", () => {
   const longAddress = "1234 " + "VERYLONGSTREETNAME ".repeat(8) + "BOULEVARD";
-  const msg = renderMessage("A", { firstName: "James", zip: "32301", address: longAddress }, BIZ);
-  assert.ok(withinSingleSegment(msg), `Fallback must be single-segment, got ${segmentInfo(msg).segments} segments`);
-  assert.ok(!msg.includes(" at "), `Fallback must drop the "at <address>" clause, got: "${msg}"`);
+  const msg = renderMessage(TALAN, { firstName: "James", zip: "32301", address: longAddress }, BIZ);
+  assert.ok(withinSingleSegment(msg), `fallback must be single-segment, got ${segmentInfo(msg).segments}`);
+  assert.ok(!msg.includes(" at "), `fallback must drop the "at <address>" clause: "${msg}"`);
   assert.ok(
     msg.endsWith("interested in window cleaning services. Reply STOP to opt out"),
-    `Fallback wording must match the approved no-address copy, got: "${msg}"`
+    `fallback wording must match the approved no-address copy: "${msg}"`
   );
 });
 
-test("renderMessage variant B: normal name → 'Hey James,'", () => {
-  const msg = renderMessage("B", TYPICAL_CONTACT, BIZ);
-  assert.ok(msg.startsWith("Hey James,"), `Expected 'Hey James,' at start, got: "${msg}"`);
+test("renderMessage (Talan): blank address → drops the clause (no dangling 'at ')", () => {
+  const msg = renderMessage(TALAN, { firstName: "James", zip: "32301", address: "" }, BIZ);
+  assert.ok(!msg.includes(" at "), `must drop the empty-address clause: "${msg}"`);
+  assert.ok(msg.endsWith("window cleaning services. Reply STOP to opt out"), `got: "${msg}"`);
 });
 
-test("renderMessage variant B: null name → 'Hey there,'", () => {
-  const msg = renderMessage("B", NULL_CONTACT, BIZ);
-  assert.ok(msg.startsWith("Hey there,"), `Expected 'Hey there,' at start, got: "${msg}"`);
-});
-
-test("renderMessage variant C: normal name → 'Hi James,'", () => {
-  const msg = renderMessage("C", TYPICAL_CONTACT, BIZ);
-  assert.ok(msg.startsWith("Hi James,"), `Expected 'Hi James,' at start, got: "${msg}"`);
-});
-
-test("renderMessage variant C: null name → 'Hi there,'", () => {
-  const msg = renderMessage("C", NULL_CONTACT, BIZ);
-  assert.ok(msg.startsWith("Hi there,"), `Expected 'Hi there,' at start, got: "${msg}"`);
+test("renderMessage (Talan): typical first-name + address fits one segment", () => {
+  const info = segmentInfo(renderMessage(TALAN, TYPICAL_CONTACT, BIZ));
+  assert.equal(info.segments, 1, `overflows to ${info.segments} segments (${info.length}/${info.encoding})`);
 });
 
 // ---------------------------------------------------------------------------
-// renderMessage — zip fallback
+// renderMessage — generic template (any client): placeholder substitution
 // ---------------------------------------------------------------------------
 
-test("renderMessage variant B: null zip → 'your area' (no leftover placeholder)", () => {
-  const msg = renderMessage("B", NO_ZIP_CONTACT, BIZ);
-  assert.ok(msg.includes("your area"), `Expected 'your area' fallback, got: "${msg}"`);
-  assert.ok(!msg.includes("["), `No leftover bracket in: "${msg}"`);
+const GENERIC = "Hi [NAME], [BIZ] here serving [ZIP]. Want a free quote? Reply STOP to opt out.";
+
+test("renderMessage (generic): substitutes [NAME]/[BIZ]/[ZIP]", () => {
+  const msg = renderMessage(GENERIC, { firstName: "James", zip: "32301", address: "x" }, "Acme Co");
+  assert.ok(msg.startsWith("Hi James, Acme Co here serving 32301."), `got: "${msg}"`);
+  assert.ok(!msg.includes("["), `leftover bracket: "${msg}"`);
 });
 
-test("renderMessage variant C: null zip → 'your area'", () => {
-  const msg = renderMessage("C", { firstName: "James", zip: null }, BIZ);
-  assert.ok(msg.includes("your area"), `Expected 'your area' fallback, got: "${msg}"`);
+test("renderMessage (generic): null name → 'Hi there,', null zip → 'your area'", () => {
+  const msg = renderMessage(GENERIC, { firstName: null, zip: null, address: "x" }, "Acme Co");
+  assert.ok(msg.startsWith("Hi there, Acme Co here serving your area."), `got: "${msg}"`);
 });
 
-// ---------------------------------------------------------------------------
-// renderMessage — bizName appears in message
-// ---------------------------------------------------------------------------
-
-test("renderMessage: bizName appears in variants B and C (pilot variant A has none)", () => {
-  for (const v of ["B", "C"] as const) {
-    const msg = renderMessage(v, TYPICAL_CONTACT, BIZ);
-    assert.ok(msg.includes(BIZ), `Variant ${v} missing bizName, got: "${msg}"`);
-  }
+test("renderMessage: a DIFFERENT template produces DIFFERENT output (template-driven, per the client record)", () => {
+  const c = { firstName: "James", zip: "32301", address: "123 Main St" };
+  const a = renderMessage("Hey [NAME], offer one. Reply STOP to opt out.", c, "Acme");
+  const b = renderMessage("Yo [NAME], offer two. Reply STOP to opt out.", c, "Acme");
+  assert.notEqual(a, b);
+  assert.ok(a.startsWith("Hey James, offer one."), `got: "${a}"`);
+  assert.ok(b.startsWith("Yo James, offer two."), `got: "${b}"`);
 });
 
-// ---------------------------------------------------------------------------
-// renderMessage — single-segment check for typical inputs (CRITICAL)
-// ---------------------------------------------------------------------------
-
-test("renderMessage variant A: typical first-name + address fits one segment", () => {
-  const msg = renderMessage("A", TYPICAL_CONTACT, BIZ);
-  const info = segmentInfo(msg);
-  assert.equal(
-    info.segments,
-    1,
-    `Variant A overflows to ${info.segments} segments (${info.length} chars / ${info.encoding}). Message: "${msg}"`
-  );
-});
-
-test("renderMessage variant B: typical first-name + zip fits one segment", () => {
-  const msg = renderMessage("B", TYPICAL_CONTACT, BIZ);
-  const info = segmentInfo(msg);
-  assert.equal(
-    info.segments,
-    1,
-    `Variant B overflows to ${info.segments} segments (${info.length} chars / ${info.encoding}). Message: "${msg}"`
-  );
-});
-
-test("renderMessage variant C: typical first-name + zip fits one segment", () => {
-  const msg = renderMessage("C", TYPICAL_CONTACT, BIZ);
-  const info = segmentInfo(msg);
-  assert.equal(
-    info.segments,
-    1,
-    `Variant C overflows to ${info.segments} segments (${info.length} chars / ${info.encoding}). Message: "${msg}"`
-  );
-});
-
-test("renderMessage all variants: withinSingleSegment for typical input", () => {
-  for (const v of VARIANTS) {
-    const msg = renderMessage(v, TYPICAL_CONTACT, BIZ);
-    assert.ok(
-      withinSingleSegment(msg),
-      `Variant ${v} exceeds one segment. Segment info: ${JSON.stringify(segmentInfo(msg))}. Message: "${msg}"`
-    );
-  }
+test("renderMessage: appends the opt-out line if a template omits it (hard guardrail)", () => {
+  const msg = renderMessage("Hi [NAME], quick note.", { firstName: "James", zip: null, address: "x" }, "Acme");
+  assert.ok(/Reply STOP to opt out\.?$/.test(msg), `guardrail must append opt-out: "${msg}"`);
 });
 
 // ---------------------------------------------------------------------------
@@ -300,78 +199,62 @@ test("segmentInfo: short ASCII string → GSM-7, 1 segment", () => {
 });
 
 test("segmentInfo: exactly 160 GSM-7 chars → 1 segment", () => {
-  const msg = "A".repeat(160);
-  const info = segmentInfo(msg);
+  const info = segmentInfo("A".repeat(160));
   assert.equal(info.encoding, "GSM-7");
   assert.equal(info.segments, 1);
 });
 
 test("segmentInfo: 161-char ASCII string → GSM-7, 2 segments", () => {
-  const msg = "A".repeat(161);
-  const info = segmentInfo(msg);
+  const info = segmentInfo("A".repeat(161));
   assert.equal(info.encoding, "GSM-7");
   assert.equal(info.segments, 2);
   assert.equal(info.length, 161);
 });
 
 test("segmentInfo: 306-char ASCII string → GSM-7, 2 segments (2×153)", () => {
-  const msg = "A".repeat(306);
-  const info = segmentInfo(msg);
+  const info = segmentInfo("A".repeat(306));
   assert.equal(info.encoding, "GSM-7");
   assert.equal(info.segments, 2);
 });
 
 test("segmentInfo: 307-char ASCII string → GSM-7, 3 segments", () => {
-  const msg = "A".repeat(307);
-  const info = segmentInfo(msg);
+  const info = segmentInfo("A".repeat(307));
   assert.equal(info.encoding, "GSM-7");
   assert.equal(info.segments, 3);
 });
 
 test("segmentInfo: string with emoji → UCS-2", () => {
-  const msg = "Hello 🎉";
-  const info = segmentInfo(msg);
-  assert.equal(info.encoding, "UCS-2");
+  assert.equal(segmentInfo("Hello 🎉").encoding, "UCS-2");
 });
 
 test("segmentInfo: short UCS-2 string → 1 segment (≤ 70 chars)", () => {
-  const msg = "Hello 世界"; // "Hello 世界"
-  const info = segmentInfo(msg);
+  const info = segmentInfo("Hello 世界");
   assert.equal(info.encoding, "UCS-2");
   assert.equal(info.segments, 1);
 });
 
 test("segmentInfo: exactly 70-char UCS-2 string → 1 segment", () => {
-  // Use a non-GSM char to force UCS-2 encoding, pad to 70
-  const nonGsm = "世"; // 世
-  const msg = nonGsm + "A".repeat(69);
-  const info = segmentInfo(msg);
+  const info = segmentInfo("世" + "A".repeat(69));
   assert.equal(info.encoding, "UCS-2");
   assert.equal(info.length, 70);
   assert.equal(info.segments, 1);
 });
 
 test("segmentInfo: 71-char UCS-2 string → 2 segments", () => {
-  const nonGsm = "世";
-  const msg = nonGsm + "A".repeat(70);
-  const info = segmentInfo(msg);
+  const info = segmentInfo("世" + "A".repeat(70));
   assert.equal(info.encoding, "UCS-2");
   assert.equal(info.length, 71);
   assert.equal(info.segments, 2);
 });
 
 test("segmentInfo: 134-char UCS-2 string → 2 segments (2×67)", () => {
-  const nonGsm = "世";
-  const msg = nonGsm + "A".repeat(133);
-  const info = segmentInfo(msg);
+  const info = segmentInfo("世" + "A".repeat(133));
   assert.equal(info.encoding, "UCS-2");
   assert.equal(info.segments, 2);
 });
 
 test("segmentInfo: 135-char UCS-2 string → 3 segments", () => {
-  const nonGsm = "世";
-  const msg = nonGsm + "A".repeat(134);
-  const info = segmentInfo(msg);
+  const info = segmentInfo("世" + "A".repeat(134));
   assert.equal(info.encoding, "UCS-2");
   assert.equal(info.segments, 3);
 });
@@ -389,16 +272,13 @@ test("withinSingleSegment: 161+ char message → false", () => {
 });
 
 test("withinSingleSegment: emoji message over 70 → false", () => {
-  // emoji forces UCS-2, 71 chars overflows
-  const msg = "世" + "A".repeat(70); // 71 chars UCS-2
-  assert.equal(withinSingleSegment(msg), false);
+  assert.equal(withinSingleSegment("世" + "A".repeat(70)), false);
 });
 
 // ---------------------------------------------------------------------------
-// renderMessage variant A (pilot) — REAL DATA proof (session-6.md Task 0)
+// renderMessage (Talan) — REAL DATA proof (session-6.md Task 0)
 //   Every real contact must render single-segment AND end with the opt-out line.
-//   The longest real addresses must STILL fit with the address (no fallback), so
-//   we are not silently dropping the address clause on the real list.
+//   The longest real addresses must STILL fit with the address (no fallback).
 // ---------------------------------------------------------------------------
 
 interface CsvRow {
@@ -418,11 +298,11 @@ function loadPilotContacts(): CsvRow[] {
   });
 }
 
-test("renderMessage variant A: ALL 500 real contacts render single-segment + opt-out line", () => {
+test("renderMessage (Talan): ALL 500 real contacts render single-segment + opt-out line", () => {
   const rows = loadPilotContacts();
   assert.ok(rows.length >= 500, `expected ~500 rows, got ${rows.length}`);
   for (const row of rows) {
-    const msg = renderMessage("A", { firstName: row.firstName, zip: row.zip, address: row.address }, BIZ);
+    const msg = renderMessage(TALAN, { firstName: row.firstName, zip: row.zip, address: row.address }, BIZ);
     assert.ok(
       withinSingleSegment(msg),
       `Row "${row.firstName} / ${row.address}" overflows: ${JSON.stringify(segmentInfo(msg))} — "${msg}"`
@@ -434,12 +314,12 @@ test("renderMessage variant A: ALL 500 real contacts render single-segment + opt
   }
 });
 
-test("renderMessage variant A: the LONGEST real addresses stay single-segment (fallback guarantees it)", () => {
+test("renderMessage (Talan): the LONGEST real addresses stay single-segment (fallback guarantees it)", () => {
   const rows = loadPilotContacts();
   const longest = [...rows].sort((a, b) => b.address.length - a.address.length).slice(0, 10);
   assert.ok(longest[0].address.length >= 24, `expected a long real address, got "${longest[0].address}"`);
   for (const row of longest) {
-    const msg = renderMessage("A", { firstName: row.firstName, zip: row.zip, address: row.address }, BIZ);
+    const msg = renderMessage(TALAN, { firstName: row.firstName, zip: row.zip, address: row.address }, BIZ);
     assert.ok(
       withinSingleSegment(msg),
       `Longest address row overflowed — ${JSON.stringify(segmentInfo(msg))} — "${msg}"`
@@ -448,15 +328,13 @@ test("renderMessage variant A: the LONGEST real addresses stay single-segment (f
   }
 });
 
-test("renderMessage variant A: the address clause is retained for nearly all real contacts (fallback is rare)", () => {
+test("renderMessage (Talan): the address clause is retained for nearly all real contacts (fallback is rare)", () => {
   const rows = loadPilotContacts();
   let retained = 0;
   for (const row of rows) {
-    const msg = renderMessage("A", { firstName: row.firstName, zip: row.zip, address: row.address }, BIZ);
+    const msg = renderMessage(TALAN, { firstName: row.firstName, zip: row.zip, address: row.address }, BIZ);
     if (msg.includes(" at ")) retained++;
   }
-  // The fallback should only fire for the few longest address+name combos. If it
-  // fires broadly, the copy or segment math has regressed.
   assert.ok(
     retained >= rows.length - 10,
     `Fallback dropped the address on ${rows.length - retained}/${rows.length} contacts (expected ≤ 10)`

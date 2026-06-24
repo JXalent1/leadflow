@@ -1,12 +1,18 @@
 import { redirect } from "next/navigation";
 import { isAuthed, logout } from "@/app/actions";
 import { getDashboardData } from "@/lib/dashboard";
+import { getClientById } from "@/lib/clients";
+import { clientIdFromSearchParams } from "@/lib/request-client";
 import DashboardClient from "@/components/dashboard-client";
 
 // Always render fresh — counts/leads/replies change as the campaign runs.
 export const dynamic = "force-dynamic";
 
-export default async function DashboardPage() {
+export default async function DashboardPage({
+  searchParams,
+}: {
+  searchParams: { clientId?: string };
+}) {
   // Reuse the Session 1 admin gate. Unauthed → back to the / login.
   if (!(await isAuthed())) {
     redirect("/");
@@ -15,7 +21,9 @@ export default async function DashboardPage() {
   let initialError: string | null = null;
   let initial = null;
   try {
-    initial = await getDashboardData();
+    const client = await getClientById(clientIdFromSearchParams(searchParams));
+    if (!client) throw new Error("client not found");
+    initial = await getDashboardData(client);
   } catch (err) {
     initialError = err instanceof Error ? err.message : "Unknown database error";
   }

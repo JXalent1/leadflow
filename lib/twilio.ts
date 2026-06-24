@@ -77,12 +77,20 @@ export function getSenderField(): { messagingServiceSid: string } | { from: stri
  * Send exactly one SMS. Wrapped in try/catch — returns a typed result instead of
  * throwing for send failures so the caller can mark the contact 'failed' and move
  * on. The auth token is never included in any error.
+ *
+ * `sender` is the per-client Twilio sender (from clientSender(client)). When omitted it falls
+ * back to the env sender (getSenderField) — used by the smoke scripts. The account credentials
+ * (SID/token) are always account-level env; only the from-number/messaging-service is per client.
  */
-export async function sendOne(to: string, body: string): Promise<SendResult> {
+export async function sendOne(
+  to: string,
+  body: string,
+  sender?: { messagingServiceSid: string } | { from: string }
+): Promise<SendResult> {
   try {
     const client = getClient();
-    const sender = getSenderField();
-    const msg = await client.messages.create({ to, body, ...sender });
+    const s = sender ?? getSenderField();
+    const msg = await client.messages.create({ to, body, ...s });
     return { ok: true, sid: msg.sid, status: msg.status };
   } catch (err: unknown) {
     // Twilio errors carry a numeric `code` and a `message`; surface those, nothing else.
@@ -99,16 +107,19 @@ export async function sendOne(to: string, body: string): Promise<SendResult> {
 // Pacing
 // ---------------------------------------------------------------------------
 
-/** Sends/hour from env (default 60). Clamped to a sane floor of 1. */
-export function sendRatePerHour(): number {
-  const raw = Number(process.env.SEND_RATE_PER_HOUR);
+/**
+ * Sends/hour. Prefers an explicit per-client `override` (client.send_rate_per_hour); falls back
+ * to env SEND_RATE_PER_HOUR (default 60). Clamped to a sane floor of 1.
+ */
+export function sendRatePerHour(override?: number): number {
+  const raw = override !== undefined ? override : Number(process.env.SEND_RATE_PER_HOUR);
   if (!Number.isFinite(raw) || raw <= 0) return 60;
   return Math.max(1, Math.floor(raw));
 }
 
-/** Milliseconds to wait between consecutive sends to honor the hourly rate. */
-export function pacingDelayMs(): number {
-  return Math.round(3_600_000 / sendRatePerHour());
+/** Milliseconds to wait between consecutive sends to honor the hourly rate (per-client override). */
+export function pacingDelayMs(rateOverride?: number): number {
+  return Math.round(3_600_000 / sendRatePerHour(rateOverride));
 }
 
 /** Promise-based sleep used to space sends. */
@@ -131,44 +142,63 @@ const DEFAULT_START_HOUR = 10;
 const DEFAULT_END_HOUR = 19;
 const DEFAULT_TIMEZONE = "America/New_York";
 
+/**
+ * Per-client send-window config (from clientWindow(client)). When a caller passes it, the
+ * window/timezone come from the client record; when omitted, they fall back to env (used by
+ * scripts / any pre-v2 caller). Structurally compatible with lib/clients SendWindowConfig.
+ */
+export interface SendWindowOptions {
+  startHour: number;
+  endHour: number;
+  timezone: string;
+}
+
 function envHour(name: string, fallback: number): number {
   const raw = Number(process.env[name]);
   if (!Number.isInteger(raw) || raw < 0 || raw > 23) return fallback;
   return raw;
 }
 
+/** Resolve effective window config from an optional per-client override, else env defaults. */
+function resolveWindow(cfg?: SendWindowOptions): SendWindowOptions {
+  if (cfg) return cfg;
+  return {
+    startHour: envHour("SEND_WINDOW_START_HOUR", DEFAULT_START_HOUR),
+    endHour: envHour("SEND_WINDOW_END_HOUR", DEFAULT_END_HOUR),
+    timezone: process.env.SEND_TIMEZONE?.trim() || DEFAULT_TIMEZONE,
+  };
+}
+
 export function sendTimezone(): string {
   return process.env.SEND_TIMEZONE?.trim() || DEFAULT_TIMEZONE;
 }
 
-/** The local hour (0–23) for `now` in the configured campaign timezone. */
-export function localHour(now: Date = new Date()): number {
+/** The local hour (0–23) for `now` in the given timezone (defaults to the env campaign timezone). */
+export function localHour(now: Date = new Date(), timezone: string = sendTimezone()): number {
   const fmt = new Intl.DateTimeFormat("en-US", {
     hour: "numeric",
     hour12: false,
-    timeZone: sendTimezone(),
+    timeZone: timezone,
   });
   // hourCycle differences can yield "24" for midnight; normalize to 0–23.
   const raw = parseInt(fmt.format(now), 10);
   if (Number.isNaN(raw)) {
     // Fail closed rather than silently fall back to server-local (UTC on Vercel) time,
     // which would evaluate the send window in the wrong timezone.
-    throw new Error(`localHour: Intl returned a non-numeric hour for timezone ${sendTimezone()}`);
+    throw new Error(`localHour: Intl returned a non-numeric hour for timezone ${timezone}`);
   }
   return raw % 24;
 }
 
-/** True only if `now` falls within [start, end) local hours of the campaign timezone. */
-export function withinSendWindow(now: Date = new Date()): boolean {
-  const start = envHour("SEND_WINDOW_START_HOUR", DEFAULT_START_HOUR);
-  const end = envHour("SEND_WINDOW_END_HOUR", DEFAULT_END_HOUR);
-  const hour = localHour(now);
-  return hour >= start && hour < end;
+/** True only if `now` falls within [start, end) local hours of the client's campaign timezone. */
+export function withinSendWindow(now: Date = new Date(), cfg?: SendWindowOptions): boolean {
+  const w = resolveWindow(cfg);
+  const hour = localHour(now, w.timezone);
+  return hour >= w.startHour && hour < w.endHour;
 }
 
 /** Human-readable window description for logs / API responses. */
-export function sendWindowLabel(): string {
-  const start = envHour("SEND_WINDOW_START_HOUR", DEFAULT_START_HOUR);
-  const end = envHour("SEND_WINDOW_END_HOUR", DEFAULT_END_HOUR);
-  return `${start}:00–${end}:00 ${sendTimezone()}`;
+export function sendWindowLabel(cfg?: SendWindowOptions): string {
+  const w = resolveWindow(cfg);
+  return `${w.startHour}:00–${w.endHour}:00 ${w.timezone}`;
 }

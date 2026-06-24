@@ -14,7 +14,12 @@ import { config } from "dotenv";
 config({ path: ".env.local" });
 config();
 
-import { renderMessage, segmentInfo, withinSingleSegment, type Variant } from "@/lib/sms";
+import {
+  renderMessage,
+  segmentInfo,
+  withinSingleSegment,
+  TALAN_MESSAGE_TEMPLATE,
+} from "@/lib/sms";
 import { sendOne, getSenderField, sendWindowLabel } from "@/lib/twilio";
 
 function hr(label: string) {
@@ -32,20 +37,28 @@ async function main() {
     throw new Error("TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN missing — add them to .env.local.");
   }
 
-  const variant = (process.env.SMOKE_VARIANT?.trim().toUpperCase() as Variant) || "A";
   const biz = process.env.BIZ_NAME?.trim() || "Talan Window Cleaning";
 
-  // Render exactly as the campaign would (single-segment, opt-out line included).
-  const body = renderMessage(variant, { firstName: "Jordan", zip: "32301" }, biz);
+  // Render exactly as the campaign would (single-segment, opt-out line included), from the
+  // approved client-1 template. Includes a sample situs address so the smoke shows the real
+  // ADDRESS version ~98% of recipients get (not the no-address fallback). Override SMOKE_ADDRESS.
+  const sampleAddress = process.env.SMOKE_ADDRESS?.trim() || "7445 Buck Lake Rd";
+  const body = renderMessage(
+    TALAN_MESSAGE_TEMPLATE,
+    { firstName: "Jordan", zip: "32301", address: sampleAddress },
+    biz
+  );
   const seg = segmentInfo(body);
 
   hr("SENDER");
-  // Print which sender we resolved WITHOUT printing the auth token.
+  // Print which sender we resolved WITHOUT printing the auth token. NOTE (review M): this uses the
+  // ENV sender (TWILIO_FROM_NUMBER / TWILIO_MESSAGING_SERVICE_SID), not the client record. For a
+  // production-parity smoke, ensure the env from-number EQUALS client 1's clients.from_number
+  // (+18508213720) — otherwise this proves a different sender than the campaign actually uses.
   console.log(getSenderField());
   console.log("send window:", sendWindowLabel(), "(smoke ignores the window — it texts only you)");
 
   hr("MESSAGE");
-  console.log("variant:", variant);
   console.log("to:", to);
   console.log("body:", body);
   console.log(`length: ${seg.length}  segments: ${seg.segments}  encoding: ${seg.encoding}`);

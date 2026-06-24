@@ -1,5 +1,6 @@
 import { isAuthed, login, logout } from "./actions";
 import { getContactCounts } from "@/lib/db";
+import { DEFAULT_CLIENT_ID } from "@/lib/clients";
 
 export const dynamic = "force-dynamic";
 
@@ -15,7 +16,7 @@ export default async function Home({
   let counts = { total: 0, withPhone: 0, suppressed: 0 };
   let dbError: string | null = null;
   try {
-    counts = await getContactCounts();
+    counts = await getContactCounts(DEFAULT_CLIENT_ID);
   } catch (err) {
     dbError = err instanceof Error ? err.message : "Unknown database error";
   }

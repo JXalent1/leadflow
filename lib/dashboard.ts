@@ -11,15 +11,18 @@
 import {
   getContactCounts,
   getSendProgress,
+  hasActiveCampaignRun,
+} from "@/lib/db";
+import {
   getDashboardExtraCounts,
   getRecentLeads,
   getRecentInbound,
   getRecentOptOuts,
-  hasActiveCampaignRun,
   type LeadRow,
   type InboundRow,
   type OptOutRow,
-} from "@/lib/db";
+} from "@/lib/dashboard-db";
+import { clientWindow, type Client } from "@/lib/clients";
 import { isOptOut, classifyInterest } from "@/lib/classify";
 import { withinSendWindow, sendWindowLabel, sendRatePerHour } from "@/lib/twilio";
 
@@ -65,17 +68,19 @@ function dispositionFor(body: string): InboundDisposition {
   return classifyInterest(body);
 }
 
-/** Gather everything the dashboard renders. READ-ONLY. */
-export async function getDashboardData(): Promise<DashboardData> {
+/** Gather everything the dashboard renders for ONE client. READ-ONLY. */
+export async function getDashboardData(client: Client): Promise<DashboardData> {
+  const clientId = client.id;
+  const window = clientWindow(client);
   const [contactCounts, progress, extra, recentLeads, inbound, recentOptOuts, activeRun] =
     await Promise.all([
-      getContactCounts(),
-      getSendProgress(),
-      getDashboardExtraCounts(),
-      getRecentLeads(50),
-      getRecentInbound(50),
-      getRecentOptOuts(25),
-      hasActiveCampaignRun(),
+      getContactCounts(clientId),
+      getSendProgress(clientId),
+      getDashboardExtraCounts(clientId),
+      getRecentLeads(clientId, 50),
+      getRecentInbound(clientId, 50),
+      getRecentOptOuts(clientId, 25),
+      hasActiveCampaignRun(clientId),
     ]);
 
   const recentInbound: InboundFeedRow[] = inbound.map((m) => ({
@@ -97,9 +102,9 @@ export async function getDashboardData(): Promise<DashboardData> {
       optedOut: progress.opted_out,
       leads: extra.leads,
     },
-    sendWindow: { within: withinSendWindow(), label: sendWindowLabel() },
+    sendWindow: { within: withinSendWindow(new Date(), window), label: sendWindowLabel(window) },
     activeRun,
-    ratePerHour: sendRatePerHour(),
+    ratePerHour: sendRatePerHour(client.send_rate_per_hour),
     recentLeads,
     recentInbound,
     recentOptOuts,

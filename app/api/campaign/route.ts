@@ -31,6 +31,8 @@ import {
   getSendProgress,
   type Contact,
 } from "@/lib/db";
+import { resolveClient, clientIdFromRequest } from "@/lib/request-client";
+import { clientSender, clientWindow, clientBizName, type Client } from "@/lib/clients";
 import { renderMessage, withinSingleSegment, type Variant } from "@/lib/sms";
 import {
   sendOne,
@@ -55,10 +57,6 @@ function activeVariants(): Variant[] {
     .map((s) => s.trim().toUpperCase())
     .filter((s): s is Variant => s === "A" || s === "B" || s === "C");
   return parsed.length > 0 ? parsed : DEFAULT_VARIANTS;
-}
-
-function bizName(): string {
-  return process.env.BIZ_NAME?.trim() || "Talan Window Cleaning";
 }
 
 /** Deterministic round-robin variant for a contact at position `index`. */
@@ -86,6 +84,15 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "unauthorized" }, { status: 401 });
     }
 
+    // Resolve the operator's selected client (default 1). All scoping + send config (window,
+    // rate, sender, copy) come from this record — never env.
+    const client = await resolveClient(req);
+    if (!client) {
+      return NextResponse.json({ error: "client_not_found" }, { status: 404 });
+    }
+    const clientId = client.id;
+    const window = clientWindow(client);
+
     const body = await req.json().catch(() => ({}));
     const dryRun = body.dryRun === true;
     const confirm = body.confirm === true;
@@ -93,17 +100,18 @@ export async function POST(req: Request) {
     const note = typeof body.note === "string" ? body.note : undefined;
 
     const variants = activeVariants();
-    const eligible = await getEligibleContacts(limit);
+    const eligible = await getEligibleContacts(clientId, limit);
 
     // ---- Dry run: report only, never send. -------------------------------
     if (dryRun) {
       return NextResponse.json({
         dryRun: true,
+        clientId,
         eligible: eligible.length,
         perVariant: variantSplit(eligible.length, variants),
         variants,
-        sendWindow: { within: withinSendWindow(), label: sendWindowLabel() },
-        ratePerHour: sendRatePerHour(),
+        sendWindow: { within: withinSendWindow(new Date(), window), label: sendWindowLabel(window) },
+        ratePerHour: sendRatePerHour(client.send_rate_per_hour),
       });
     }
 
@@ -118,12 +126,12 @@ export async function POST(req: Request) {
         { status: 400 }
       );
     }
-    if (!withinSendWindow()) {
+    if (!withinSendWindow(new Date(), window)) {
       return NextResponse.json(
         {
           error: "outside_send_window",
-          message: `Sending is only allowed within ${sendWindowLabel()}.`,
-          window: sendWindowLabel(),
+          message: `Sending is only allowed within ${sendWindowLabel(window)}.`,
+          window: sendWindowLabel(window),
         },
         { status: 409 }
       );
@@ -132,10 +140,10 @@ export async function POST(req: Request) {
       return NextResponse.json({ ran: true, eligible: 0, sent: 0, failed: 0, note: "nothing eligible" });
     }
 
-    // Concurrent-run guard: refuse if another run is in flight, so two callers can't
-    // both blast the list and defeat pacing. (Per-contact atomic claim still prevents
+    // Concurrent-run guard: refuse if another run is in flight FOR THIS CLIENT, so two callers
+    // can't both blast the list and defeat pacing. (Per-contact atomic claim still prevents
     // double-texting even if this guard is raced.)
-    if (await hasActiveCampaignRun()) {
+    if (await hasActiveCampaignRun(clientId)) {
       return NextResponse.json(
         { error: "campaign_already_running", message: "Another campaign run is in flight; try again shortly." },
         { status: 409 }
@@ -143,10 +151,11 @@ export async function POST(req: Request) {
     }
 
     // ---- Paced, resumable send loop. -------------------------------------
-    const runId = await createCampaignRun(eligible.length, note);
-    const delay = pacingDelayMs();
-    const result = await runSend(eligible, variants, delay);
+    const runId = await createCampaignRun(clientId, eligible.length, note);
+    const delay = pacingDelayMs(client.send_rate_per_hour);
+    const result = await runSend(client, eligible, variants, delay);
     await finishCampaignRun(
+      clientId,
       runId,
       result.sent,
       note ??
@@ -157,6 +166,7 @@ export async function POST(req: Request) {
     return NextResponse.json({
       ran: true,
       runId,
+      clientId,
       eligible: eligible.length,
       attempted: result.attempted,
       sent: result.sent,
@@ -165,7 +175,7 @@ export async function POST(req: Request) {
       skippedClaimed: result.skippedClaimed,
       stoppedForWindow: result.stoppedForWindow,
       perVariant: result.perVariant,
-      ratePerHour: sendRatePerHour(),
+      ratePerHour: sendRatePerHour(client.send_rate_per_hour),
     });
   } catch (err) {
     // Log full detail server-side; return a generic label (raw errors can carry
@@ -195,11 +205,16 @@ interface RunResult {
  * even when some rows are skipped.
  */
 async function runSend(
+  client: Client,
   eligible: Contact[],
   variants: Variant[],
   delayMs: number
 ): Promise<RunResult> {
-  const biz = bizName();
+  const clientId = client.id;
+  const biz = clientBizName(client);
+  const template = client.message_template ?? "";
+  const sender = clientSender(client);
+  const window = clientWindow(client);
   const r: RunResult = {
     attempted: 0,
     sent: 0,
@@ -214,7 +229,7 @@ async function runSend(
   let attemptIndex = 0; // advances only on contacts we actually attempt to send
   for (let i = 0; i < eligible.length; i++) {
     // Re-check the window each iteration — never keep sending past its close.
-    if (!withinSendWindow()) {
+    if (!withinSendWindow(new Date(), window)) {
       r.stoppedForWindow = true;
       console.warn(`[campaign] send window closed mid-run; stopping after ${r.attempted} attempts`);
       break;
@@ -222,8 +237,10 @@ async function runSend(
 
     const c = eligible[i];
     const variant = variantFor(attemptIndex, variants);
+    // Body comes from THIS client's template (one template per client in v2). The variant is
+    // still recorded for provenance; it no longer drives copy (each client has one template).
     const body = renderMessage(
-      variant,
+      template,
       { firstName: c.first_name, zip: c.zip, address: c.address },
       biz
     );
@@ -234,13 +251,13 @@ async function runSend(
     if (!withinSingleSegment(body)) {
       r.skippedOverflow++;
       console.warn(`[campaign] overflow contact=${c.id} variant=${variant} len=${body.length} -> failed`);
-      if (await claimForSend(c.id)) await setSendStatus(c.id, "failed");
+      if (await claimForSend(clientId, c.id)) await setSendStatus(clientId, c.id, "failed");
       continue;
     }
 
     // Atomic claim: only proceed if THIS run flipped not_sent -> sending.
     // Guarantees no double-text under crash or concurrent re-run.
-    const claimed = await claimForSend(c.id);
+    const claimed = await claimForSend(clientId, c.id);
     if (!claimed) {
       r.skippedClaimed++;
       continue;
@@ -248,33 +265,35 @@ async function runSend(
 
     // Committed to attempting this contact — record the assigned variant (matches
     // perVariant) and advance the round-robin so the split stays balanced.
-    await setVariant(c.id, variant);
+    await setVariant(clientId, c.id, variant);
     r.perVariant[variant]++;
     r.attempted++;
     attemptIndex++;
 
     const phone = c.phone as string; // eligibility guarantees non-null
-    const res = await sendOne(phone, body);
+    const res = await sendOne(phone, body, sender);
     if (res.ok) {
       await recordMessage({
+        clientId,
         contactId: c.id,
         direction: "outbound",
         body,
         twilioSid: res.sid,
         status: res.status,
       });
-      await setSendStatus(c.id, "sent");
+      await setSendStatus(clientId, c.id, "sent");
       r.sent++;
     } else {
       // Store Twilio's terminal vocabulary ('failed'); log the error code separately.
       await recordMessage({
+        clientId,
         contactId: c.id,
         direction: "outbound",
         body,
         twilioSid: null,
         status: "failed",
       });
-      await setSendStatus(c.id, "failed");
+      await setSendStatus(clientId, c.id, "failed");
       r.failed++;
       console.error(`[campaign] send failed contact=${c.id} code=${res.code ?? "?"}`);
     }
@@ -289,12 +308,12 @@ async function runSend(
   return r;
 }
 
-export async function GET() {
+export async function GET(req: Request) {
   try {
     if (!(await isAuthed())) {
       return NextResponse.json({ error: "unauthorized" }, { status: 401 });
     }
-    const progress = await getSendProgress();
+    const progress = await getSendProgress(clientIdFromRequest(req));
     return NextResponse.json(progress);
   } catch (err) {
     console.error("[campaign] progress failed:", err instanceof Error ? err.message : String(err));

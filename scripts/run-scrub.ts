@@ -14,11 +14,14 @@
 //
 // Run AFTER tracing. The dashboard's suppressed count climbing is the protection working.
 
+// dotenv must run before @/lib/* loads: lib/db throws at module load if DATABASE_URL is
+// unset, and a static import would be hoisted above config() (ESM order). Load env, then
+// dynamic-import the lib inside main(). (Bootstrap only — scrub's fail-closed logic is unchanged.)
 import { config } from "dotenv";
 config({ path: ".env.local" });
 config();
 
-import { scrubBatch, type ScrubReason } from "@/lib/scrub";
+import type { ScrubReason } from "@/lib/scrub"; // type-only — erased, never triggers lib/db load
 
 function arg(name: string): string | undefined {
   const hit = process.argv.find((a) => a.startsWith(`--${name}=`));
@@ -32,11 +35,40 @@ async function main() {
   if (!process.env.DATABASE_URL) throw new Error("DATABASE_URL is not set (add it to .env.local).");
   if (!process.env.TRACERFY_API_KEY) throw new Error("TRACERFY_API_KEY is not set.");
 
+  const { scrubBatch, InsufficientCreditsError, SCRUB_CREDITS_PER_PHONE, creditsCoverScrub } =
+    await import("@/lib/scrub");
+  const { getPendingScrubCount } = await import("@/lib/scrub-jobs");
+  const { getCredits } = await import("@/lib/tracerfy");
+  const { DEFAULT_CLIENT_ID } = await import("@/lib/clients");
+
+  const clientId = arg("client") ? Math.max(1, Number(arg("client"))) : DEFAULT_CLIENT_ID;
   const batch = Math.max(1, Number(arg("batch") ?? 100));
   const max = arg("max") ? Math.max(1, Number(arg("max"))) : Infinity;
   const delay = Math.max(0, Number(arg("delay") ?? 0));
 
-  console.log(`[scrub] starting — batch=${batch} max=${max === Infinity ? "ALL" : max} delay=${delay}ms`);
+  console.log(`[scrub] starting — client=${clientId} batch=${batch} max=${max === Infinity ? "ALL" : max} delay=${delay}ms`);
+
+  // UPFRONT credit pre-flight: report need-vs-have BEFORE submitting anything. The amount we
+  // intend to scrub this run is min(pending, max); refuse cleanly if the balance can't cover it.
+  const credits = await getCredits();
+  const pending = await getPendingScrubCount(clientId);
+  const intend = Math.min(pending, max);
+  const need = intend * SCRUB_CREDITS_PER_PHONE;
+  console.log(
+    `[scrub] credits: have ${credits}, pending-with-phone ${pending}, will scrub ${intend} this run ` +
+      `(need ≈${need} credit${need === 1 ? "" : "s"})`
+  );
+  if (pending === 0) {
+    console.log("[scrub] nothing pending to scrub — done.");
+    return;
+  }
+  if (!creditsCoverScrub(credits, intend)) {
+    console.error(
+      `[scrub] STOPPED before submitting — insufficient credits: need ${need}, have ${credits}. ` +
+        `Top up ~${need - credits} and re-run; nothing was scrubbed (no credits spent).`
+    );
+    process.exit(2);
+  }
 
   let scrubbed = 0;
   let clean = 0;
@@ -46,7 +78,19 @@ async function main() {
 
   while (scrubbed < max) {
     const limit = Math.min(batch, max - scrubbed);
-    const res = await scrubBatch({ limit });
+    let res;
+    try {
+      res = await scrubBatch(clientId, { limit });
+    } catch (err) {
+      if (err instanceof InsufficientCreditsError) {
+        console.error(
+          `[scrub] STOPPED — insufficient credits: have ${err.credits}, need ${err.needed} for ${err.pending}. ` +
+            `Top up and re-run; already-scrubbed rows are committed and will NOT re-bill.`
+        );
+        process.exit(2);
+      }
+      throw err;
+    }
 
     if (res.scrubbed === 0) {
       console.log("[scrub] nothing left to scrub — done.");

@@ -25,6 +25,7 @@ import {
   recordMessage,
   createLead,
 } from "@/lib/db";
+import { getClientByInboundNumber, clientSender, clientBizName, type Client } from "@/lib/clients";
 import { forwardLead } from "@/lib/forward";
 
 export const dynamic = "force-dynamic";
@@ -59,10 +60,6 @@ function twiml(message?: string): NextResponse {
 // Config helpers
 // ---------------------------------------------------------------------------
 
-function bizName(): string {
-  return process.env.BIZ_NAME?.trim() || "Talan Window Cleaning";
-}
-
 /**
  * Whether to emit our own opt-out confirmation. If a Twilio Messaging Service with
  * Advanced Opt-Out is enabled, Twilio confirms STOP itself — set TWILIO_ADVANCED_OPT_OUT=true
@@ -91,24 +88,35 @@ function publicUrl(req: Request): string {
   return `${proto}://${host}${url.pathname}${url.search}`;
 }
 
-/** Wire the real lib/db + lib/forward implementations into the inbound core. */
-function buildDeps(): InboundDeps {
+/**
+ * Wire the real lib/db + lib/forward implementations into the inbound core, ALL scoped to the
+ * client that owns the inbound number. Every read/write is bound to `client.id` so an inbound to
+ * client A's number can never touch client B's contacts, suppression, opt-outs, leads, or forward.
+ */
+function buildDeps(client: Client): InboundDeps {
+  const clientId = client.id;
+  const forwardCfg = {
+    clientId,
+    forwardPhone: client.forward_phone,
+    sender: clientSender(client),
+  };
   return {
     findContactByPhone: (phone) =>
-      findContactByPhone(phone) as Promise<InboundContactLite | null>,
-    logInboundOnce: (args) => logInboundOnce(args),
-    recordOptOut: (contactId, phone) => recordOptOut(contactId, phone),
-    markSuppressed: (contactId, reason) => markSuppressed(contactId, reason),
+      findContactByPhone(clientId, phone) as Promise<InboundContactLite | null>,
+    logInboundOnce: (args) => logInboundOnce({ clientId, ...args }),
+    recordOptOut: (contactId, phone) => recordOptOut(clientId, contactId, phone),
+    markSuppressed: (contactId, reason) => markSuppressed(clientId, contactId, reason),
     recordOutbound: async (args) => {
       await recordMessage({
+        clientId,
         contactId: args.contactId,
         direction: "outbound",
         body: args.body,
         status: args.status,
       });
     },
-    createLead: (args) => createLead(args),
-    forwardLead: (args) => forwardLead(args),
+    createLead: (args) => createLead({ clientId, ...args }),
+    forwardLead: (args) => forwardLead(args, forwardCfg),
   };
 }
 
@@ -142,6 +150,7 @@ export async function POST(req: Request) {
 
     // --- Parse the inbound message. -----------------------------------------
     const from = params.From ?? "";
+    const to = params.To ?? "";
     const body = params.Body ?? "";
     const messageSid = params.MessageSid || params.SmsSid || "";
     if (!from || !messageSid) {
@@ -150,11 +159,25 @@ export async function POST(req: Request) {
       return twiml();
     }
 
-    // --- Decide + execute (STOP precedence / idempotency / triage). ---------
+    // --- Resolve the OWNING client by the To number (the client's campaign number). ----------
+    // Multi-tenant: the message belongs to whichever client owns the number it came in on. All
+    // downstream effects are scoped to that client. If no client owns the number, we ack and do
+    // NOTHING — a message to an unknown number never reads or writes anyone's data.
+    const client = await getClientByInboundNumber(to);
+    if (!client) {
+      console.warn(`[webhook] valid signature but no client owns To=${to}; acking without processing.`);
+      return twiml();
+    }
+
+    // --- Decide + execute (STOP precedence / idempotency / triage), scoped to the client. ----
     const outcome = await processInbound(
       { fromPhone: normalizePhone(from), body, messageSid },
-      buildDeps(),
-      { bizName: bizName(), emitConfirmation: emitConfirmation() },
+      buildDeps(client),
+      {
+        bizName: clientBizName(client),
+        emitConfirmation: emitConfirmation(),
+        optOutConfirmation: client.optout_confirmation ?? undefined,
+      },
     );
 
     // Only the STOP confirmation goes back as a TwiML <Message> (sent exactly once).

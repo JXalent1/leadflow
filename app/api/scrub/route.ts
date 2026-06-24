@@ -12,7 +12,8 @@
 
 import { NextResponse } from "next/server";
 import { isAuthed } from "@/app/actions";
-import { scrubBatch } from "@/lib/scrub";
+import { clientIdFromRequest } from "@/lib/request-client";
+import { scrubBatch, InsufficientCreditsError } from "@/lib/scrub";
 
 export const maxDuration = 300;
 
@@ -30,9 +31,21 @@ export async function POST(req: Request) {
       ? body.phoneColumns
       : undefined;
 
-    const result = await scrubBatch({ limit, traceQueueId, phoneColumns });
+    const result = await scrubBatch(clientIdFromRequest(req), { limit, traceQueueId, phoneColumns });
     return NextResponse.json(result);
   } catch (err) {
+    // Credit pre-flight refusal — nothing was submitted/spent. 402 so the caller can top up.
+    if (err instanceof InsufficientCreditsError) {
+      return NextResponse.json(
+        {
+          error: "insufficient_credits",
+          credits: err.credits,
+          needed: err.needed,
+          pending: err.pending,
+        },
+        { status: 402 }
+      );
+    }
     // Log detail server-side; return a generic label (avoid leaking Tracerfy/DB internals).
     console.error("[scrub] failed:", err instanceof Error ? err.message : String(err));
     return NextResponse.json({ error: "scrub_failed" }, { status: 502 });

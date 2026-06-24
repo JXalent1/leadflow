@@ -1,4 +1,4 @@
-import type { LeadRow } from "@/lib/db";
+import type { LeadRow } from "@/lib/dashboard-db";
 import { displayName, formatTime } from "./dashboard-utils";
 
 /**

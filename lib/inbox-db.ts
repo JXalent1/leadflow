@@ -65,22 +65,23 @@ export interface ThreadDetail {
  * contact's suppressed flag (so the UI can mark/disable opted-out threads), and the
  * latest lead status if any. Ordered by last activity, newest first.
  */
-export async function getInboxThreads(limit = 200): Promise<InboxThreadRow[]> {
+export async function getInboxThreads(clientId: number, limit = 200): Promise<InboxThreadRow[]> {
   const rows = await sql`
     WITH relevant AS (
       SELECT c.id
       FROM contacts c
-      WHERE EXISTS (
-              SELECT 1 FROM messages m
-              WHERE m.contact_id = c.id AND m.direction = 'inbound'
-            )
-         OR EXISTS (SELECT 1 FROM leads l WHERE l.contact_id = c.id)
+      WHERE c.client_id = ${clientId}
+        AND (EXISTS (
+               SELECT 1 FROM messages m
+               WHERE m.contact_id = c.id AND m.client_id = ${clientId} AND m.direction = 'inbound'
+             )
+          OR EXISTS (SELECT 1 FROM leads l WHERE l.contact_id = c.id AND l.client_id = ${clientId}))
     ),
     last_msg AS (
       SELECT DISTINCT ON (m.contact_id)
         m.contact_id, m.body, m.direction, m.created_at
       FROM messages m
-      WHERE m.contact_id IN (SELECT id FROM relevant)
+      WHERE m.client_id = ${clientId} AND m.contact_id IN (SELECT id FROM relevant)
       ORDER BY m.contact_id, m.created_at DESC, m.id DESC
     )
     SELECT
@@ -104,7 +105,8 @@ export async function getInboxThreads(limit = 200): Promise<InboxThreadRow[]> {
     JOIN contacts c ON c.id = r.id
     LEFT JOIN last_msg lm ON lm.contact_id = c.id
     LEFT JOIN LATERAL (
-      SELECT id, status, created_at FROM leads WHERE contact_id = c.id ORDER BY id DESC LIMIT 1
+      SELECT id, status, created_at FROM leads
+      WHERE contact_id = c.id AND client_id = ${clientId} ORDER BY id DESC LIMIT 1
     ) l ON true
     -- Order by last activity. Fall back to the lead's created_at for a lead-only contact
     -- with no messages (review H1) so it sorts by recency, not always to the bottom.
@@ -114,12 +116,12 @@ export async function getInboxThreads(limit = 200): Promise<InboxThreadRow[]> {
   return rows as InboxThreadRow[];
 }
 
-/** Full thread for one contact (contact + latest lead + all messages chronological). */
-export async function getThread(contactId: number): Promise<ThreadDetail | null> {
+/** Full thread for one contact within a client (contact + latest lead + all messages). */
+export async function getThread(clientId: number, contactId: number): Promise<ThreadDetail | null> {
   const contactRows = await sql`
     SELECT id, first_name, last_name, address, phone, suppressed
     FROM contacts
-    WHERE id = ${contactId}
+    WHERE id = ${contactId} AND client_id = ${clientId}
   `;
   if (contactRows.length === 0) return null;
   const contact = contactRows[0] as ThreadDetail["contact"];
@@ -127,7 +129,7 @@ export async function getThread(contactId: number): Promise<ThreadDetail | null>
   const leadRows = await sql`
     SELECT id, status, notes, reply_text
     FROM leads
-    WHERE contact_id = ${contactId}
+    WHERE contact_id = ${contactId} AND client_id = ${clientId}
     ORDER BY id DESC
     LIMIT 1
   `;
@@ -136,29 +138,31 @@ export async function getThread(contactId: number): Promise<ThreadDetail | null>
   const messages = await sql`
     SELECT id, direction, body, twilio_sid, status, created_at
     FROM messages
-    WHERE contact_id = ${contactId}
+    WHERE contact_id = ${contactId} AND client_id = ${clientId}
     ORDER BY created_at ASC, id ASC
   `;
 
   return { contact, lead, messages: messages as ThreadMessage[] };
 }
 
-/** Load one contact by id. Used by the reply endpoint to read phone + suppression. */
-export async function getContactById(id: number): Promise<Contact | null> {
-  const rows = await sql`SELECT * FROM contacts WHERE id = ${id}`;
+/** Load one contact by id within a client. Used by the reply endpoint to read phone + suppression. */
+export async function getContactById(clientId: number, id: number): Promise<Contact | null> {
+  const rows = await sql`SELECT * FROM contacts WHERE id = ${id} AND client_id = ${clientId}`;
   return rows.length ? (rows[0] as Contact) : null;
 }
 
 /**
- * Is this phone on the permanent opt-out record? Compares last-10 digits on both
- * sides so formatting differences never miss a STOP. A blank phone returns true
- * (fail closed — the reply endpoint must never text a contact with no usable number).
+ * Is this phone on a client's permanent opt-out record? Compares last-10 digits on both
+ * sides so formatting differences never miss a STOP. A blank phone returns true (fail closed —
+ * the reply endpoint must never text a contact with no usable number). Scoped per client so a
+ * reply for client A is gated only by client A's opt-outs (never leaks client B's records).
  */
-export async function isPhoneOptedOut(phone: string | null): Promise<boolean> {
+export async function isPhoneOptedOut(clientId: number, phone: string | null): Promise<boolean> {
   if (!phone || !phone.trim()) return true;
   const rows = await sql`
     SELECT 1 FROM opt_outs
-    WHERE right(regexp_replace(phone, '[^0-9]', '', 'g'), 10)
+    WHERE client_id = ${clientId}
+      AND right(regexp_replace(phone, '[^0-9]', '', 'g'), 10)
         = right(regexp_replace(${phone}, '[^0-9]', '', 'g'), 10)
     LIMIT 1
   `;
@@ -183,6 +187,7 @@ export interface UpdatedLead {
  * if no lead has that id. Status validation is the caller's job (see /api/leads).
  */
 export async function setLeadStatus(
+  clientId: number,
   leadId: number,
   fields: { status?: string; notes?: string | null }
 ): Promise<UpdatedLead | null> {
@@ -193,7 +198,7 @@ export async function setLeadStatus(
     UPDATE leads
     SET status = COALESCE(${status}, status),
         notes  = CASE WHEN ${notesProvided} THEN ${notes} ELSE notes END
-    WHERE id = ${leadId}
+    WHERE id = ${leadId} AND client_id = ${clientId}
     RETURNING id, contact_id, reply_text, forwarded, forwarded_at, status, notes, created_at
   `;
   return rows.length ? (rows[0] as UpdatedLead) : null;

@@ -2,8 +2,24 @@
 
 _For the next session — read this first._
 
-_Last updated: 2026-06-25 (Claude Code — V7 phase 1 launch-UI redesign + no-scrub toggle BUILT +
-DEPLOYED; launch is now point-and-click. Prod login already FIXED + verified; ✅ GO.)_
+_Last updated: 2026-06-25 (Claude Code — send-rate cap raised 1000→20000/hr (+ batch cap 50→250),
+deployed. V7 phase 1 launch-UI + no-scrub toggle already shipped. Prod login FIXED; ✅ GO.)_
+
+## ▶ Send-rate cap raise (2026-06-25) — DONE + DEPLOYED
+The 1,000/hr cap was an early-build artifact; the operator is an A2P-compliant 10DLC sender who wants
+to send faster. Surgical change, **no safety touched**:
+- `lib/pipeline.ts`: new `MAX_SEND_RATE_PER_HOUR = 20000` + shared pure `clampSendRate(rate)`
+  ([1, 20000], integer, non-finite→1). `sendBatchSize` cap raised 50 → **250** (still `≈ rate/20`),
+  so high rates materialize while every batch stays well under the 300s limit (worst case ~179s where
+  the cap first binds at 5000/hr; 10000/hr ≈ 90s, 20000/hr ≈ 45s) and realized rate ≈ target.
+- `lib/clients.ts` `setClientSendRate` now uses `clampSendRate` (ceiling 1000 → 20000).
+- `components/pipeline-runner.tsx` rate input `max={MAX_SEND_RATE_PER_HOUR}`.
+- **Unchanged (load-bearing):** `claimForSend` no-double-send, per-batch send-window re-check,
+  opt-out/suppression/eligibility, send-confirm modal. `/api/client` PATCH validation (rejects
+  non-number / <1) is unchanged and still fronts the clamp.
+- **Green:** tsc/build, `npm test` = **211** (pacing tests updated), isolation 28/28, access/cockpit/
+  auto-pause/passthrough all pass. **Deployed** `vercel --prod` → `https://leadflow1-seven.vercel.app`.
+- Operator: set Rate/hr ≤ 20000 → Save rate → Run pipeline (realized speed still bounded by Twilio).
 
 ## ▶ V7 phase 1 (2026-06-25) — launch UI redesign + no-scrub toggle: DONE + DEPLOYED
 The operator found the old UI unusable; this makes the 2,500 launch **fully point-and-click**.

@@ -5,6 +5,7 @@ import {
   TRACE_BATCH,
   SCRUB_BATCH,
   MAX_STAGE_ITERATIONS,
+  MAX_SEND_RATE_PER_HOUR,
   sendBatchSize,
   clientPacingDelayMs,
 } from "@/lib/pipeline";
@@ -244,10 +245,12 @@ export default function PipelineRunner({
               id="rate-input"
               type="number"
               min={1}
+              max={MAX_SEND_RATE_PER_HOUR}
+              step={1}
               value={rateInput}
               onChange={(e) => setRateInput(e.target.value)}
               disabled={savingRate}
-              className="h-9 w-20"
+              className="h-9 w-24"
             />
           </div>
           <Button variant="secondary" size="sm" onClick={saveRate} loading={savingRate} className="h-9">

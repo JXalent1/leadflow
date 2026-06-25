@@ -13,6 +13,7 @@
  */
 
 import { sql } from "@/lib/db";
+import { clampSendRate } from "@/lib/pipeline";
 
 // Re-exported from a db-free module so pure modules (lib/access.ts) can import the default without
 // pulling in the Neon driver. Operator routes/pages default here when no client is selected.
@@ -71,12 +72,14 @@ function toClient(r: Record<string, unknown>): Client {
 
 /**
  * Update a client's live send rate (sends/hour). (v2 Module V3 — live send-rate control.)
- * Clamped to [1, 1000]; the value is persisted so the send loop, which reads
- * client.send_rate_per_hour fresh on every batch, picks the change up on the next batch with NO
- * redeploy. Returns the clamped value actually stored. Scoped to the one client_id.
+ * Clamped to [1, MAX_SEND_RATE_PER_HOUR] (20000) via the shared pure clampSendRate; the value is
+ * persisted so the send loop, which reads client.send_rate_per_hour fresh on every batch, picks the
+ * change up on the next batch with NO redeploy. Returns the clamped value actually stored. Scoped to
+ * the one client_id. The clamp only sets the ceiling — no-double-send, the send window, and
+ * opt-out/suppression are independent of the rate and unchanged.
  */
 export async function setClientSendRate(clientId: number, rate: number): Promise<number> {
-  const clamped = Math.max(1, Math.min(1000, Math.floor(rate)));
+  const clamped = clampSendRate(rate);
   await sql`UPDATE clients SET send_rate_per_hour = ${clamped} WHERE id = ${clientId}`;
   return clamped;
 }

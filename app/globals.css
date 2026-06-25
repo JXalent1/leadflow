@@ -3,9 +3,16 @@
 @tailwind utilities;
 
 :root {
-  color-scheme: light dark;
+  color-scheme: light;
 }
 
 body {
-  @apply bg-neutral-50 text-neutral-900;
+  @apply bg-slate-50 text-slate-900;
+}
+
+/* Subtle, consistent focus ring across the app's interactive elements. */
+@layer base {
+  *:focus-visible {
+    @apply outline-none ring-2 ring-indigo-500/60 ring-offset-2 ring-offset-white;
+  }
 }

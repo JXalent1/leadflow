@@ -1,53 +1,29 @@
 import type { DashboardCounts } from "@/lib/dashboard";
+import StatTile from "./ui/stat-tile";
 
-/** The status count cards. Eligible / Sent / Leads are emphasized. */
+type Tone = "default" | "good" | "warn" | "lead" | "danger";
+
+/** The status count tiles. Eligible / Sent / Leads are emphasized; in-flight/failed warn. */
 export default function CountCards({ counts }: { counts: DashboardCounts }) {
-  const cards: { label: string; value: number; accent?: "good" | "warn" | "lead" }[] = [
+  const cards: { label: string; value: number; tone?: Tone }[] = [
     { label: "Total contacts", value: counts.total },
     { label: "With phone", value: counts.withPhone },
     { label: "Scrubbed clean", value: counts.scrubbedClean },
-    { label: "Eligible", value: counts.eligible, accent: "good" },
-    { label: "Sent", value: counts.sent, accent: "good" },
+    { label: "Eligible", value: counts.eligible, tone: "good" },
+    { label: "Sent", value: counts.sent, tone: "good" },
     { label: "Pending", value: counts.pending },
-    { label: "In flight", value: counts.inFlight, accent: counts.inFlight > 0 ? "warn" : undefined },
-    { label: "Failed", value: counts.failed, accent: counts.failed > 0 ? "warn" : undefined },
+    { label: "In flight", value: counts.inFlight, tone: counts.inFlight > 0 ? "warn" : "default" },
+    { label: "Failed", value: counts.failed, tone: counts.failed > 0 ? "danger" : "default" },
     { label: "Suppressed", value: counts.suppressed },
     { label: "Opted out", value: counts.optedOut },
-    { label: "Leads", value: counts.leads, accent: "lead" },
+    { label: "Leads", value: counts.leads, tone: "lead" },
   ];
 
   return (
     <section className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
       {cards.map((c) => (
-        <Card key={c.label} label={c.label} value={c.value} accent={c.accent} />
+        <StatTile key={c.label} label={c.label} value={c.value.toLocaleString()} tone={c.tone} />
       ))}
     </section>
-  );
-}
-
-function Card({
-  label,
-  value,
-  accent,
-}: {
-  label: string;
-  value: number;
-  accent?: "good" | "warn" | "lead";
-}) {
-  const accentClass =
-    accent === "lead"
-      ? "border-emerald-300 bg-emerald-50"
-      : accent === "good"
-        ? "border-sky-200 bg-sky-50"
-        : accent === "warn"
-          ? "border-amber-300 bg-amber-50"
-          : "border-neutral-200 bg-white";
-  return (
-    <div className={`rounded-lg border p-3 ${accentClass}`}>
-      <div className="text-2xl font-semibold">{value}</div>
-      <div className="mt-1 text-[11px] uppercase tracking-wide text-neutral-500">
-        {label}
-      </div>
-    </div>
   );
 }

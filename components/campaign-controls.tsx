@@ -1,12 +1,17 @@
 "use client";
 
 import { useState } from "react";
+import Card from "./ui/card";
+import Button from "./ui/button";
+import { Input } from "./ui/field";
+import { ChevronDownIcon } from "./ui/icons";
 
 /**
  * Manual stage controls (overrides). These ONLY call the existing read/idempotent endpoints
  * (/api/skiptrace, /api/scrub, and a SEND-NOTHING dry run on /api/campaign). The actual paced
  * send + the one-click trace→scrub→send drive live in PipelineRunner; nothing here sends SMS.
  * Handy for running a single stage (e.g. trace a capped slice) without driving the whole pipeline.
+ * V7: tucked into a collapsed-by-default secondary area so the primary launch flow stays prominent.
  */
 
 interface Props {
@@ -23,6 +28,7 @@ export default function CampaignControls({ scope, windowLabel, onChanged }: Prop
   const [busy, setBusy] = useState<string | null>(null);
   const [msg, setMsg] = useState<{ kind: MsgKind; text: string } | null>(null);
   const [traceLimit, setTraceLimit] = useState("");
+  const [open, setOpen] = useState(false);
 
   function show(kind: MsgKind, text: string) {
     setMsg({ kind, text });
@@ -87,65 +93,90 @@ export default function CampaignControls({ scope, windowLabel, onChanged }: Prop
   }
 
   return (
-    <section className="rounded-lg border border-neutral-200 bg-white p-4">
-      <h2 className="mb-1 text-sm font-semibold">Manual stage controls</h2>
-      <p className="mb-3 text-xs text-neutral-500">
-        Run a single stage by hand. The send-nothing dry run previews eligibility. None of these
-        send SMS — use “Run pipeline” above for the real, paced send.
-      </p>
-
-      <div className="flex flex-wrap items-center gap-2">
-        <div className="flex items-center gap-1">
-          <input
-            type="number"
-            min={1}
-            placeholder="limit"
-            value={traceLimit}
-            onChange={(e) => setTraceLimit(e.target.value)}
-            className="w-20 rounded-md border border-neutral-300 px-2 py-1.5 text-sm"
-          />
-          <button
-            disabled={busy !== null}
-            onClick={() => {
-              const n = parseInt(traceLimit, 10);
-              call("Skip trace", "/api/skiptrace", n > 0 ? { limit: n } : {});
-            }}
-            className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm hover:bg-neutral-50 disabled:opacity-40"
-          >
-            {busy === "Skip trace" ? "Tracing…" : "Run skip trace"}
-          </button>
+    <Card padded={false}>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center justify-between gap-3 rounded-xl px-4 py-3 text-left transition-colors hover:bg-slate-50"
+        aria-expanded={open}
+      >
+        <div>
+          <h2 className="text-sm font-semibold text-slate-900">Manual stage controls</h2>
+          <p className="text-xs text-slate-500">
+            Advanced — run a single stage by hand. None of these send SMS.
+          </p>
         </div>
+        <ChevronDownIcon
+          className={`h-5 w-5 shrink-0 text-slate-400 transition-transform ${open ? "rotate-180" : ""}`}
+        />
+      </button>
 
-        <button
-          disabled={busy !== null}
-          onClick={() => call("Scrub", "/api/scrub", {})}
-          className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm hover:bg-neutral-50 disabled:opacity-40"
-        >
-          {busy === "Scrub" ? "Scrubbing…" : "Run scrub"}
-        </button>
+      {open ? (
+        <div className="border-t border-slate-100 p-4">
+          <p className="mb-3 text-xs text-slate-500">
+            The send-nothing dry run previews eligibility. None of these send SMS — use “Run
+            pipeline” above for the real, paced send.
+          </p>
 
-        <button
-          disabled={busy !== null}
-          onClick={() => call("Dry run", "/api/campaign", { dryRun: true })}
-          className="rounded-md border border-sky-300 bg-sky-50 px-3 py-1.5 text-sm text-sky-800 hover:bg-sky-100 disabled:opacity-40"
-        >
-          {busy === "Dry run" ? "Checking…" : "Dry-run send"}
-        </button>
-      </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-1">
+              <Input
+                type="number"
+                min={1}
+                placeholder="limit"
+                value={traceLimit}
+                onChange={(e) => setTraceLimit(e.target.value)}
+                className="h-9 w-24"
+              />
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={busy !== null}
+                onClick={() => {
+                  const n = parseInt(traceLimit, 10);
+                  call("Skip trace", "/api/skiptrace", n > 0 ? { limit: n } : {});
+                }}
+                className="h-9"
+              >
+                {busy === "Skip trace" ? "Tracing…" : "Run skip trace"}
+              </Button>
+            </div>
 
-      {msg ? (
-        <p
-          className={`mt-3 rounded-md px-3 py-2 text-sm ${
-            msg.kind === "ok"
-              ? "bg-emerald-50 text-emerald-700"
-              : msg.kind === "err"
-                ? "bg-red-50 text-red-700"
-                : "bg-sky-50 text-sky-800"
-          }`}
-        >
-          {msg.text}
-        </p>
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={busy !== null}
+              onClick={() => call("Scrub", "/api/scrub", {})}
+              className="h-9"
+            >
+              {busy === "Scrub" ? "Scrubbing…" : "Run scrub"}
+            </Button>
+
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={busy !== null}
+              onClick={() => call("Dry run", "/api/campaign", { dryRun: true })}
+              className="h-9 border-sky-300 bg-sky-50 text-sky-800 hover:bg-sky-100"
+            >
+              {busy === "Dry run" ? "Checking…" : "Dry-run send"}
+            </Button>
+          </div>
+
+          {msg ? (
+            <p
+              className={`mt-3 rounded-lg px-3 py-2 text-sm ${
+                msg.kind === "ok"
+                  ? "border border-emerald-200 bg-emerald-50 text-emerald-700"
+                  : msg.kind === "err"
+                    ? "border border-red-200 bg-red-50 text-red-700"
+                    : "border border-sky-200 bg-sky-50 text-sky-800"
+              }`}
+            >
+              {msg.text}
+            </p>
+          ) : null}
+        </div>
       ) : null}
-    </section>
+    </Card>
   );
 }

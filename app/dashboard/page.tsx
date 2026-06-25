@@ -8,6 +8,9 @@ import { resolveCampaignForClient, listCampaigns } from "@/lib/campaigns";
 import { requestedClientIdFromSearchParams, campaignIdFromSearchParams } from "@/lib/request-client";
 import DashboardClient from "@/components/dashboard-client";
 import CampaignBar from "@/components/campaign-bar";
+import AppHeader from "@/components/ui/app-header";
+import Button from "@/components/ui/button";
+import { ArrowLeftIcon, InboxIcon } from "@/components/ui/icons";
 
 // Always render fresh — counts/leads/replies change as the campaign runs.
 export const dynamic = "force-dynamic";
@@ -45,54 +48,59 @@ export default async function DashboardPage({
   }
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-6xl flex-col gap-8 px-6 py-10">
-      <header className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold">LeadFlow — Campaign Dashboard</h1>
-          <p className="text-sm text-neutral-500">
-            {clientName || "Client"}
-            {initial ? ` · ${initial.campaignName}` : ""}
-          </p>
-        </div>
-        <div className="flex items-center gap-4">
-          <a href="/" className="text-sm text-neutral-500 hover:text-neutral-900">
-            ← All clients
-          </a>
-          <a
-            href="/inbox"
-            className="rounded-md bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-neutral-700"
-          >
-            Inbox →
-          </a>
-          <form action={logout}>
-            <button className="text-sm text-neutral-500 hover:text-neutral-900">
-              Log out
-            </button>
-          </form>
-        </div>
-      </header>
-
-      <CampaignBar
-        clientId={clientId}
-        campaigns={campaigns}
-        selectedCampaignId={selectedCampaignId}
+    <div className="min-h-screen bg-slate-50">
+      <AppHeader
+        email={user.email}
+        logout={logout}
+        nav={
+          <>
+            <a
+              href="/"
+              className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-sm font-medium text-slate-500 transition-colors hover:text-slate-900"
+            >
+              <ArrowLeftIcon className="h-4 w-4" />
+              <span className="hidden sm:inline">All clients</span>
+            </a>
+            <Button href="/inbox" variant="secondary" size="sm">
+              <InboxIcon className="h-4 w-4" />
+              Inbox
+            </Button>
+          </>
+        }
       />
 
-      {initialError ? (
-        <p className="rounded-md bg-red-50 px-4 py-3 text-sm text-red-700">
-          Database error: {initialError}
-        </p>
-      ) : !initial ? (
-        <p className="rounded-md bg-amber-50 px-4 py-3 text-sm text-amber-800">
-          No campaign yet. Upload a CSV list above to create one and start the pipeline.
-        </p>
-      ) : (
-        <DashboardClient
-          initial={initial}
+      <main className="mx-auto flex max-w-6xl flex-col gap-6 px-6 py-8">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight text-slate-900">
+            {clientName || "Client"}
+          </h1>
+          <p className="mt-1 text-sm text-slate-500">
+            Campaign dashboard{initial ? ` · ${initial.campaignName}` : ""}
+          </p>
+        </div>
+
+        <CampaignBar
           clientId={clientId}
-          campaignId={initial.campaignId}
+          campaigns={campaigns}
+          selectedCampaignId={selectedCampaignId}
         />
-      )}
-    </main>
+
+        {initialError ? (
+          <p className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+            Database error: {initialError}
+          </p>
+        ) : !initial ? (
+          <p className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+            No campaign yet. Upload a CSV list above to create one and start the pipeline.
+          </p>
+        ) : (
+          <DashboardClient
+            initial={initial}
+            clientId={clientId}
+            campaignId={initial.campaignId}
+          />
+        )}
+      </main>
+    </div>
   );
 }

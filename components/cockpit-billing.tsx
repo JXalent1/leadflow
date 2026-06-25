@@ -2,6 +2,9 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import Badge from "./ui/badge";
+import type { Tone } from "./ui/badge";
+import Button from "./ui/button";
 
 /**
  * components/cockpit-billing.tsx — the per-client billing control on the operator cockpit. (V6.)
@@ -15,10 +18,10 @@ import { useRouter } from "next/navigation";
 
 type Status = "due" | "invoiced" | "paid";
 
-const STATUS_PILL: Record<Status, { text: string; cls: string }> = {
-  due: { text: "Due", cls: "bg-amber-100 text-amber-800" },
-  invoiced: { text: "Invoiced", cls: "bg-sky-100 text-sky-800" },
-  paid: { text: "Paid ✓", cls: "bg-green-100 text-green-800" },
+const STATUS_PILL: Record<Status, { text: string; tone: Tone }> = {
+  due: { text: "Due", tone: "warning" },
+  invoiced: { text: "Invoiced", tone: "info" },
+  paid: { text: "Paid ✓", tone: "success" },
 };
 
 function fmtDate(iso: string): string {
@@ -71,31 +74,23 @@ export default function CockpitBilling({
 
   return (
     <div
-      className="mt-4 flex flex-wrap items-center gap-2 border-t border-neutral-100 pt-3 text-xs"
+      className="mt-4 flex flex-wrap items-center gap-2 border-t border-slate-100 pt-3 text-xs"
       onClick={(e) => e.stopPropagation()}
     >
-      <span className="text-neutral-500">
+      <span className="text-slate-500">
         {fmtAmount(amountCents)}/mo · next bill {fmtDate(nextBillDate)}
       </span>
-      <span className={`rounded-full px-2 py-0.5 font-medium ${pill.cls}`}>{pill.text}</span>
+      <Badge tone={pill.tone}>{pill.text}</Badge>
       <div className="ml-auto flex items-center gap-2">
         {status !== "paid" ? (
-          <button
-            onClick={(e) => mark("invoiced", e)}
-            disabled={busy}
-            className="rounded border border-neutral-300 px-2 py-1 hover:bg-neutral-50 disabled:opacity-40"
-          >
+          <Button variant="secondary" size="sm" onClick={(e) => mark("invoiced", e)} disabled={busy}>
             Mark invoiced
-          </button>
+          </Button>
         ) : null}
         {status !== "paid" ? (
-          <button
-            onClick={(e) => mark("paid", e)}
-            disabled={busy}
-            className="rounded border border-neutral-300 px-2 py-1 hover:bg-neutral-50 disabled:opacity-40"
-          >
+          <Button variant="secondary" size="sm" onClick={(e) => mark("paid", e)} disabled={busy}>
             Mark paid
-          </button>
+          </Button>
         ) : null}
         {err ? <span className="text-red-600">{err}</span> : null}
       </div>

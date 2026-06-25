@@ -1,8 +1,11 @@
 import type { DashboardCounts } from "@/lib/dashboard";
+import Card, { CardHeader } from "./ui/card";
+import Badge from "./ui/badge";
+import ProgressBar from "./ui/progress-bar";
 
 /**
- * Send-progress bar. Denominator = sent + remaining sendable work (eligible) +
- * in-flight, so the bar reflects how much of the known backlog has gone out.
+ * Send-progress card. Denominator = sent + remaining sendable work (eligible) + in-flight, so the
+ * bar reflects how much of the known backlog has gone out. (V7 restyle — same math.)
  */
 export default function SendProgress({
   counts,
@@ -17,33 +20,27 @@ export default function SendProgress({
   const pct = denom > 0 ? Math.round((counts.sent / denom) * 100) : 0;
 
   return (
-    <section className="rounded-lg border border-neutral-200 bg-white p-4">
-      <div className="mb-2 flex items-center justify-between">
-        <h2 className="text-sm font-semibold">Send progress</h2>
-        <span className="text-xs text-neutral-500">
-          {counts.sent} sent · {counts.eligible} eligible · {counts.inFlight} in flight ·{" "}
-          {counts.failed} failed
+    <Card>
+      <CardHeader
+        title="Send progress"
+        right={
+          <Badge tone={sendWindow.within ? "success" : "neutral"}>
+            Window {sendWindow.within ? "open" : "closed"}
+            {activeRun ? " · run active" : ""}
+          </Badge>
+        }
+      />
+
+      <ProgressBar value={pct} tone="indigo" height="h-3" />
+
+      <div className="mt-2.5 flex flex-wrap items-center justify-between gap-2 text-xs">
+        <span className="font-medium text-slate-600">{pct}% of known backlog sent</span>
+        <span className="text-slate-500">
+          {counts.sent.toLocaleString()} sent · {counts.eligible.toLocaleString()} eligible ·{" "}
+          {counts.inFlight} in flight · {counts.failed} failed
         </span>
       </div>
-
-      <div className="h-3 w-full overflow-hidden rounded-full bg-neutral-100">
-        <div
-          className="h-full rounded-full bg-sky-500 transition-all"
-          style={{ width: `${pct}%` }}
-        />
-      </div>
-
-      <div className="mt-2 flex items-center justify-between text-xs">
-        <span className="text-neutral-500">{pct}% of known backlog sent</span>
-        <span
-          className={
-            sendWindow.within ? "text-emerald-600" : "text-neutral-400"
-          }
-        >
-          Send window {sendWindow.within ? "OPEN" : "CLOSED"} · {sendWindow.label}
-          {activeRun ? " · run active" : ""}
-        </span>
-      </div>
-    </section>
+      <p className="mt-1 text-[11px] text-slate-400">Send window {sendWindow.label}</p>
+    </Card>
   );
 }

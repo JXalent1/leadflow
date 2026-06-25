@@ -8,6 +8,9 @@ import {
   sendBatchSize,
   clientPacingDelayMs,
 } from "@/lib/pipeline";
+import Card, { CardHeader } from "./ui/card";
+import Button from "./ui/button";
+import { Input } from "./ui/field";
 
 /**
  * The guided pipeline driver (v2 Module V3). The operator hits **Run** ONCE; this drives
@@ -224,59 +227,58 @@ export default function PipelineRunner({
   }
 
   return (
-    <section className="rounded-lg border border-neutral-200 bg-white p-4">
+    <Card className="ring-1 ring-indigo-100">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h2 className="text-sm font-semibold">Run pipeline</h2>
-          <p className="text-xs text-neutral-500">
-            One click drives skip-trace → scrub → paced send to completion. Resumable.
-          </p>
-        </div>
+        <CardHeader
+          title="Run pipeline"
+          subtitle="One click drives skip-trace → scrub → paced send to completion. Resumable."
+        />
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-end gap-2">
           {/* Live send-rate control — change takes effect on the next batch, no redeploy. */}
-          <label className="text-xs text-neutral-500">Rate/hr</label>
-          <input
-            type="number"
-            min={1}
-            value={rateInput}
-            onChange={(e) => setRateInput(e.target.value)}
-            disabled={savingRate}
-            className="w-20 rounded-md border border-neutral-300 px-2 py-1.5 text-sm"
-          />
-          <button
-            onClick={saveRate}
-            disabled={savingRate}
-            className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm hover:bg-neutral-50 disabled:opacity-40"
-          >
+          <div className="flex flex-col gap-1">
+            <label htmlFor="rate-input" className="text-xs font-medium text-slate-500">
+              Rate/hr
+            </label>
+            <Input
+              id="rate-input"
+              type="number"
+              min={1}
+              value={rateInput}
+              onChange={(e) => setRateInput(e.target.value)}
+              disabled={savingRate}
+              className="h-9 w-20"
+            />
+          </div>
+          <Button variant="secondary" size="sm" onClick={saveRate} loading={savingRate} className="h-9">
             {savingRate ? "Saving…" : "Save rate"}
-          </button>
+          </Button>
 
-          <button
+          <Button
             onClick={() => {
               setConfirmText("");
               setModalOpen(true);
             }}
             disabled={running}
-            className="rounded-md bg-neutral-900 px-4 py-1.5 text-sm font-medium text-white hover:bg-neutral-700 disabled:cursor-not-allowed disabled:opacity-40"
+            className="h-9"
           >
             {running ? "Running…" : "Run pipeline"}
-          </button>
+          </Button>
         </div>
       </div>
 
       {running || stage ? (
-        <div className="mt-3 flex items-center gap-3 rounded-md bg-neutral-50 px-3 py-2 text-sm">
-          <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-sky-500" />
-          <span className="font-medium">{stage ? `${stage}…` : "Working…"}</span>
-          <span className="text-neutral-500">
+        <div className="mt-3 flex flex-wrap items-center gap-3 rounded-lg bg-indigo-50 px-3 py-2 text-sm">
+          <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-indigo-500" />
+          <span className="font-medium text-indigo-900">{stage ? `${stage}…` : "Working…"}</span>
+          <span className="text-indigo-700/70">
             traced {tally.traced} · clean {tally.clean} · sent {tally.sent} · failed {tally.failed}
           </span>
         </div>
       ) : null}
 
       {!withinWindow ? (
-        <p className="mt-2 text-xs text-neutral-400">
+        <p className="mt-2 text-xs text-slate-400">
           Note: the send window ({windowLabel}) is closed — trace + scrub will run now; the send
           stage will pause until the window opens.
         </p>
@@ -284,12 +286,12 @@ export default function PipelineRunner({
 
       {msg ? (
         <p
-          className={`mt-3 rounded-md px-3 py-2 text-sm ${
+          className={`mt-3 rounded-lg px-3 py-2 text-sm ${
             msg.kind === "ok"
-              ? "bg-emerald-50 text-emerald-700"
+              ? "border border-emerald-200 bg-emerald-50 text-emerald-700"
               : msg.kind === "err"
-                ? "bg-red-50 text-red-700"
-                : "bg-sky-50 text-sky-800"
+                ? "border border-red-200 bg-red-50 text-red-700"
+                : "border border-sky-200 bg-sky-50 text-sky-800"
           }`}
         >
           {msg.text}
@@ -305,7 +307,7 @@ export default function PipelineRunner({
           onConfirm={runPipeline}
         />
       ) : null}
-    </section>
+    </Card>
   );
 }
 
@@ -324,38 +326,31 @@ function ConfirmModal({
 }) {
   const armed = confirmText.trim().toUpperCase() === "CONFIRM";
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
-      <div className="w-full max-w-md rounded-lg bg-white p-6 shadow-xl">
-        <h3 className="text-lg font-semibold">Run the full pipeline?</h3>
-        <p className="mt-2 text-sm text-neutral-700">
-          This will skip-trace, DNC/litigator-scrub, then send <span className="font-semibold">real
-          SMS</span> to every eligible contact in this campaign (paced, within {windowLabel}). It
-          spends Tracerfy credits and sends real messages, and cannot be undone. It runs to
-          completion on its own and is resumable.
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 px-4 backdrop-blur-sm">
+      <div className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-6 shadow-2xl">
+        <h3 className="text-lg font-semibold text-slate-900">Run the full pipeline?</h3>
+        <p className="mt-2 text-sm text-slate-600">
+          This will skip-trace, DNC/litigator-scrub, then send{" "}
+          <span className="font-semibold text-slate-900">real SMS</span> to every eligible contact in
+          this campaign (paced, within {windowLabel}). It spends Tracerfy credits and sends real
+          messages, and cannot be undone. It runs to completion on its own and is resumable.
         </p>
-        <p className="mt-3 text-sm text-neutral-600">
-          Type <span className="font-mono font-semibold">CONFIRM</span> to proceed:
+        <p className="mt-3 text-sm text-slate-600">
+          Type <span className="font-mono font-semibold text-slate-900">CONFIRM</span> to proceed:
         </p>
-        <input
+        <Input
           autoFocus
           value={confirmText}
           onChange={(e) => setConfirmText(e.target.value)}
-          className="mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm"
+          className="mt-1"
         />
         <div className="mt-4 flex justify-end gap-2">
-          <button
-            onClick={onCancel}
-            className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm hover:bg-neutral-50"
-          >
+          <Button variant="secondary" onClick={onCancel}>
             Cancel
-          </button>
-          <button
-            disabled={!armed}
-            onClick={onConfirm}
-            className="rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-500 disabled:opacity-40"
-          >
+          </Button>
+          <Button variant="danger" disabled={!armed} onClick={onConfirm}>
             Run pipeline
-          </button>
+          </Button>
         </div>
       </div>
     </div>

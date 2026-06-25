@@ -4,6 +4,7 @@ import { getSessionUser } from "@/lib/session";
 import { isOperator } from "@/lib/access";
 import { getCockpitData } from "@/lib/cockpit";
 import CockpitView from "@/components/cockpit-view";
+import AppHeader from "@/components/ui/app-header";
 
 export const dynamic = "force-dynamic";
 
@@ -24,31 +25,25 @@ export default async function Home() {
   }
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-5xl flex-col gap-8 px-6 py-10">
-      <header className="flex items-center justify-between">
+    <div className="min-h-screen bg-slate-50">
+      <AppHeader email={user.email} logout={logout} />
+
+      <main className="mx-auto flex max-w-6xl flex-col gap-6 px-6 py-8">
         <div>
-          <h1 className="text-2xl font-semibold">LeadFlow — Operator Cockpit</h1>
-          <p className="text-sm text-neutral-500">
-            Leads this cycle vs. each client&apos;s lead guarantee.
+          <h1 className="text-2xl font-semibold tracking-tight text-slate-900">Operator cockpit</h1>
+          <p className="mt-1 text-sm text-slate-500">
+            Every client at a glance — leads this cycle against their guarantee.
           </p>
         </div>
-        <div className="flex items-center gap-4">
-          <span className="text-sm text-neutral-500">{user.email}</span>
-          <form action={logout}>
-            <button className="text-sm text-neutral-500 hover:text-neutral-900">
-              Log out
-            </button>
-          </form>
-        </div>
-      </header>
 
-      {dbError ? (
-        <p className="rounded-md bg-red-50 px-4 py-3 text-sm text-red-700">
-          Database error: {dbError}
-        </p>
-      ) : (
-        <CockpitView data={data!} />
-      )}
-    </main>
+        {dbError ? (
+          <p className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+            Database error: {dbError}
+          </p>
+        ) : (
+          <CockpitView data={data!} />
+        )}
+      </main>
+    </div>
   );
 }

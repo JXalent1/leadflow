@@ -9,7 +9,7 @@ import { displayName, formatTime } from "./dashboard-utils";
  */
 export default function LeadsTable({ leads }: { leads: LeadRow[] }) {
   return (
-    <section className="rounded-lg border-2 border-emerald-300 bg-white">
+    <section className="overflow-hidden rounded-xl border border-emerald-300 bg-white shadow-sm">
       <div className="flex items-center justify-between border-b border-emerald-200 bg-emerald-50 px-4 py-3">
         <h2 className="text-base font-semibold text-emerald-900">
           Leads ({leads.length})
@@ -20,13 +20,13 @@ export default function LeadsTable({ leads }: { leads: LeadRow[] }) {
       </div>
 
       {leads.length === 0 ? (
-        <p className="px-4 py-8 text-center text-sm text-neutral-500">
+        <p className="px-4 py-8 text-center text-sm text-slate-500">
           No leads yet. Interested replies will appear here.
         </p>
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm">
-            <thead className="bg-neutral-50 text-xs uppercase tracking-wide text-neutral-500">
+            <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
               <tr>
                 <th className="px-4 py-2 font-medium">Name</th>
                 <th className="px-4 py-2 font-medium">Address</th>
@@ -37,25 +37,25 @@ export default function LeadsTable({ leads }: { leads: LeadRow[] }) {
                 <th className="px-4 py-2 font-medium"></th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-neutral-100">
+            <tbody className="divide-y divide-slate-100">
               {leads.map((l) => (
                 <tr key={l.id} className="align-top">
                   <td className="px-4 py-3 font-medium">
                     {displayName(l.first_name, l.last_name, l.phone)}
                     {l.phone ? (
-                      <div className="text-xs font-normal text-neutral-400">{l.phone}</div>
+                      <div className="text-xs font-normal text-slate-400">{l.phone}</div>
                     ) : null}
                   </td>
-                  <td className="px-4 py-3 text-neutral-700">{l.address ?? "—"}</td>
-                  <td className="px-4 py-3 text-neutral-700">
+                  <td className="px-4 py-3 text-slate-700">{l.address ?? "—"}</td>
+                  <td className="px-4 py-3 text-slate-700">
                     {l.reply_text ? `"${l.reply_text}"` : "—"}
                   </td>
                   <td className="px-4 py-3 whitespace-nowrap">
-                    <span className="rounded bg-neutral-100 px-2 py-0.5 text-xs font-medium text-neutral-700">
+                    <span className="rounded bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-700">
                       {l.status}
                     </span>
                   </td>
-                  <td className="px-4 py-3 whitespace-nowrap text-neutral-500">
+                  <td className="px-4 py-3 whitespace-nowrap text-slate-500">
                     {formatTime(l.created_at)}
                   </td>
                   <td className="px-4 py-3 whitespace-nowrap">

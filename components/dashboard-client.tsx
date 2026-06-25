@@ -9,6 +9,8 @@ import CampaignControls from "./campaign-controls";
 import LeadsTable from "./leads-table";
 import ReplyFeed from "./reply-feed";
 import OptOutList from "./opt-out-list";
+import Badge from "./ui/badge";
+import { PauseIcon } from "./ui/icons";
 import { formatTime } from "./dashboard-utils";
 
 /**
@@ -63,14 +65,14 @@ export default function DashboardClient({
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-center justify-between text-xs text-neutral-400">
+      <div className="flex items-center justify-between text-xs text-slate-400">
         <span>
           {staleError
             ? "⚠ Could not refresh — showing last good data."
             : `Last updated ${formatTime(data.fetchedAt)}`}
           {refreshing ? " · refreshing…" : ""}
         </span>
-        <button onClick={refresh} className="hover:text-neutral-900">
+        <button onClick={refresh} className="font-medium hover:text-slate-900">
           Refresh now
         </button>
       </div>
@@ -84,17 +86,18 @@ export default function DashboardClient({
       />
 
       <div className="flex flex-wrap items-center gap-2 text-sm">
-        <span className="text-neutral-500">
+        <span className="text-slate-500">
           Leads this {data.autoPause.period}:{" "}
-          <span className="font-medium tabular-nums text-neutral-900">
+          <span className="font-semibold tabular-nums text-slate-900">
             {data.autoPause.leadsThisPeriod}/{data.autoPause.target}
           </span>{" "}
           target
         </span>
         {data.autoPause.met ? (
-          <span className="rounded-full bg-purple-100 px-3 py-1 text-xs font-medium text-purple-800">
-            ⏸ Auto-paused — target met, sending resumes {data.autoPause.nextPeriod}
-          </span>
+          <Badge tone="indigo">
+            <PauseIcon className="h-3 w-3" />
+            Auto-paused — target met, resumes {data.autoPause.nextPeriod}
+          </Badge>
         ) : null}
       </div>
 

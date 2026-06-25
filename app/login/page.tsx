@@ -2,11 +2,14 @@ import { redirect } from "next/navigation";
 import { login } from "@/app/actions";
 import { getSessionUser } from "@/lib/session";
 import { isOperator } from "@/lib/access";
+import LoginForm from "@/components/login-form";
+import { Wordmark } from "@/components/ui/wordmark";
 
 export const dynamic = "force-dynamic";
 
 // The single login page (v2 Module V5) — email + password, real per-user accounts. An already
-// logged-in user is bounced to their home (operator → cockpit, client → their dashboard).
+// logged-in user is bounced to their home (operator → cockpit, client → their dashboard). V7: the
+// raw form is replaced by a branded product login card (LoginForm handles the submit/loading state).
 export default async function LoginPage({
   searchParams,
 }: {
@@ -16,35 +19,21 @@ export default async function LoginPage({
   if (user) redirect(isOperator(user) ? "/" : "/client");
 
   return (
-    <main className="flex min-h-screen items-center justify-center px-6">
-      <form
-        action={login}
-        className="w-full max-w-sm space-y-4 rounded-lg border border-neutral-200 bg-white p-6"
-      >
-        <h1 className="text-xl font-semibold">LeadFlow</h1>
-        <p className="text-sm text-neutral-500">Sign in to your account.</p>
-        <input
-          type="email"
-          name="email"
-          placeholder="Email"
-          autoComplete="username"
-          autoFocus
-          className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm outline-none focus:border-neutral-900"
-        />
-        <input
-          type="password"
-          name="password"
-          placeholder="Password"
-          autoComplete="current-password"
-          className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm outline-none focus:border-neutral-900"
-        />
-        {searchParams.error === "1" ? (
-          <p className="text-sm text-red-600">Incorrect email or password.</p>
-        ) : null}
-        <button className="w-full rounded-md bg-neutral-900 px-3 py-2 text-sm font-medium text-white hover:bg-neutral-700">
-          Sign in
-        </button>
-      </form>
+    <main className="flex min-h-screen flex-col items-center justify-center bg-slate-50 px-6 py-12">
+      <div className="w-full max-w-sm">
+        <div className="mb-8 flex flex-col items-center text-center">
+          <Wordmark size="lg" />
+          <p className="mt-3 text-sm text-slate-500">
+            SMS lead generation for home-service businesses.
+          </p>
+        </div>
+
+        <LoginForm action={login} hasError={searchParams.error === "1"} />
+
+        <p className="mt-6 text-center text-xs text-slate-400">
+          Authorized operators &amp; clients only.
+        </p>
+      </div>
     </main>
   );
 }

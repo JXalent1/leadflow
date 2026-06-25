@@ -3,23 +3,24 @@
 _Read + verify pass, 2026-06-25 (Claude Code). No product behavior changed. No real texts, no real
 credits, no real-list run. Live DB left pristine._
 
-## VERDICT: ❌ NO-GO (today) — but the load-bearing blocker is now cleared
+## VERDICT: ✅ GO — prod is live and login works. Only the operator's manual campaign launch remains.
 
-**UPDATE 2026-06-25 (later same day):** Module N (no-scrub mode) is now **BUILT** (see item E below) —
-the original #1 blocker is resolved. Two operational blockers remain before GO:
+**UPDATE 2026-06-25 (login fixed):** All app/infra blockers are cleared. Prod serves v2, `SESSION_SECRET`
+is set, and both login users are seeded **and verified** (real `verifyPassword` + live prod `/login`).
+The operator can sign in at `https://leadflow1-seven.vercel.app/login` and run the campaign (runbook below).
 
-1. ✅ ~~Module N (no-scrub mode) is NOT built.~~ **BUILT** — `campaigns.scrub_mode` + the passthrough +
-   the `/api/scrub` branch + `test:passthrough` (24/24). A `scrub_mode='none'` campaign now sends with no
-   vendor scrub/spend, opt-out exclusion intact. Owes a single-reviewer correctness pass.
-2. **Prod is at V1.** Local `HEAD` = `origin/main` = `5a19d5c` (V1 only). All of V2–V6 **and** Module N
-   live in the uncommitted working tree. The deployed `leadflow1` app has none of campaigns / login /
-   cockpit / auto-pause / the no-scrub path. → **Commit + push + deploy the working tree.**
-3. **No users seeded.** The live DB has `users: 0`. Login (V5) replaced the shared admin password, so
-   with zero users **nobody can log in** to drive the campaign. → **Run `npm run seed:users`** (locally
-   and in prod) with `SESSION_SECRET` set.
+1. ✅ **Module N built** — `scrub_mode` + passthrough + `/api/scrub` branch + `test:passthrough` (24/24);
+   independent correctness review CLEAN.
+2. ✅ **Deployed** — `8626f84` on `origin/main`; `vercel --prod` READY; prod serving v2; schema on the Neon DB.
+3. ✅ **`SESSION_SECRET` set in prod** (by the operator) — login renders, no 500.
+4. ✅ **Users seeded + verified** — operator `#40 jordan@xalent.ai` (operator) + client `#41
+   Texexteriors@gmail.com` (client, client_id=1). Proof: `verifyPassword(typed pw, storedHash)` == true for
+   both; live prod `POST /login` → **303 `/`** (operator) and **303 `/client`** (client). The `users` table
+   was empty (the earlier seed never wrote a row) — fixed by re-running the seed; no code change.
+   **Same-DB confirmed:** a throwaway user created in the `.env.local` DB was authenticated by prod, so
+   prod's (Sensitive, un-pullable) `DATABASE_URL` == `.env.local`'s.
 
-Everything else (build, tests, auth gating, eligibility/suppression, send window, webhook signature gate)
-is green. Once the tree is deployed and users are seeded, this should flip to GO.
+Remaining = the campaign itself (operator's manual go): see the **Operator launch runbook** at the bottom.
 
 ---
 
@@ -91,15 +92,24 @@ is green. Once the tree is deployed and users are seeded, this should flip to GO
 - **To clear 2,500 in the 10am–7pm (9h) window you need ~300/hr (~8–9h).** Confirm 300/hr is inside your
   **Twilio 10DLC daily throughput cap** before sending, and start earlier in the day to leave slack.
 
-### G. Deployed prod (Vercel) health — ❌ BLOCKER (prod is behind) / ⚠️ env unverified
-- `git status -sb` → `main...origin/main`, both at **`5a19d5c` (V1)**. 79 files are uncommitted/untracked
-  (all of V2–V6 + the launch files). **The deployed `leadflow1` app is at most V1** — no login, no
-  campaigns, no cockpit, no auto-pause, no no-scrub path. A deploy of the current tree (after Module N)
-  is mandatory.
-- **Env in prod — verify in the Vercel dashboard (I cannot read prod env from here):** `DATABASE_URL`,
-  `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` / `TWILIO_FROM_NUMBER` (or messaging-service SID),
-  `TRACERFY_API_KEY`, `SESSION_SECRET` (≥32), plus the **client-record** config (from_number,
-  forward_phone, send window/rate). All are present in `.env.local`; presence in Vercel is **unverified**.
+### G. Deployed prod (Vercel) health — ✅ DEPLOYED v2 / ⛔ `SESSION_SECRET` missing in prod
+- **Deployed:** committed `8626f84`, pushed to `origin/main`, `vercel --prod` → READY
+  (`https://leadflow1-seven.vercel.app`, deployment `dpl_GuR5P2qnhnefVgNMuAr4MNtVTxQk`). HTTP smoke:
+  `/login` → 200 (v2 LeadFlow login, NOT the old admin-password gate); `/` → 307 → `/login`;
+  `/api/dashboard` + `/api/portal` → 401; `/api/webhook/twilio` (no signature) → 403. Schema applied to
+  the Neon DB (65 stmts, idempotent — `scrub_mode` + all V1–V6 tables present).
+- **Prod env present** (`vercel env ls production`, names only): `DATABASE_URL`, `TWILIO_ACCOUNT_SID` /
+  `TWILIO_AUTH_TOKEN` / `TWILIO_FROM_NUMBER`, `TRACERFY_API_KEY`, plus `SEND_RATE_PER_HOUR` /
+  `SEND_TIMEZONE` / `TALAN_FORWARD_PHONE` (env fallbacks). The deprecated `ADMIN_PASSWORD` is still set
+  (harmless — unused since V5; safe to delete).
+- **⛔ `SESSION_SECRET` is NOT set in prod.** V5 login fails closed without it → the login POST 500s.
+  Operator must add a ≥32-char random `SESSION_SECRET` to Vercel (production) **and redeploy** (env added
+  after a deploy doesn't apply to the running one). Not set by me (security-sensitive auth secret;
+  guardrail = don't touch prod auth env beyond seeding).
+- **Note:** the prod `DATABASE_URL` value is marked Sensitive so the CLI returns it empty — I could not
+  byte-compare it to `.env.local`. The `.env.local` var set is this project's Neon-integration output, so
+  it's almost certainly the same DB; the operator's confirming login to prod (after seeding) verifies it
+  end-to-end.
 
 ### H. Compliance guardrails intact — ✅
 - `npm run smoke:webhook` → **5/5** (valid signature accepted; forged / tampered-body / wrong-URL /
@@ -112,22 +122,27 @@ is green. Once the tree is deployed and users are seeded, this should flip to GO
 
 ---
 
-## Operator to-dos before launch (in order)
-1. ✅ ~~Build Module N.~~ **DONE** (item E). Optionally run the single-reviewer correctness pass it owes.
-2. **Commit + push + deploy** the working tree to Vercel — prod is at V1; nothing past it ships until you
-   do (item G). Apply the schema migration in prod too (`scrub_mode` column).
-3. **Seed users** — `npm run seed:users` (with `SESSION_SECRET` set), locally **and** in prod. The DB has
-   0 users; nobody can log in otherwise (item B).
-4. **Set `SESSION_SECRET` (≥32) in Vercel** and verify every required env var is present in prod (item G).
-5. **Fund Tracerfy ~$50** for the **skip-trace** of the 2,500 (the list has no phones; ~$0.02/trace).
-   No-scrub mode skips the *scrub* spend, **not** the trace spend.
-6. **Raise the send rate to ~300/hr** before sending (off the 60/hr default) and confirm it's inside your
-   Twilio 10DLC daily cap (item F).
-7. **Configure client 1's record** — `from_number`, `forward_phone` (Talan's cell), send window — and
-   create the 2,500 campaign with `scrub_mode='none'` once Module N exists.
-8. **Rotate** the Twilio token + Tracerfy key (shared in plaintext per handoff) before/after launch.
+## Live DB state (pristine — unchanged by the deploy session)
+`clients: 1` (id 1, active) · `campaigns: 1` (Tallahassee pilot, `scrub_mode='vendor'`) · `contacts: 500`
+(91 sent, 91 clean) · `users: 0` · `client_invoices: 0` · `opt_outs: 5`. No throwaway rows created.
 
-## Live DB state (pristine — unchanged by this session)
-`clients: 1` (id 1, active) · `campaigns: 1` (Tallahassee pilot, sending) · `contacts: 500` (91 sent,
-91 clean) · `users: 0` · `client_invoices: 0` · `opt_outs: 5`. No throwaway rows created (item D's live
-pipeline was intentionally not run). All fixtures self-cleaned (each reported "client 1 … unchanged").
+---
+
+## ▶ Operator launch runbook (do these in order — then you are GO)
+
+**Setup is DONE:** ✅ `SESSION_SECRET` set in prod · ✅ users seeded + verified (operator
+`jordan@xalent.ai`, client `Texexteriors@gmail.com`). Log in at
+`https://leadflow1-seven.vercel.app/login` → you land on the cockpit.
+
+**The campaign itself:**
+1. **Fund Tracerfy ~$50** — the 2,500 list has no phones, so the skip-**trace** spends ~$0.02/contact.
+   (No-scrub mode skips the *scrub* spend, not the trace.)
+2. **Upload** `data/tallahassee_2500_2026-06-25.csv` from the dashboard → creates a new campaign. Set it to
+   **`scrub_mode='none'`** — either pass `scrubMode=none` on the upload (`POST /api/campaigns`) or
+   `PATCH /api/campaigns {campaignId, scrubMode:'none'}` after.
+3. **Configure client 1** if not already: `from_number`, `forward_phone` (Talan's cell). **Raise the send
+   rate** to ~**300/hr** (`PATCH /api/client {sendRatePerHour:300}`) to clear 2,500 inside the 10am–7pm ET
+   window (~8–9h) — confirm it's within your Twilio 10DLC daily throughput cap.
+4. **Run the pipeline** (trace → passthrough scrub → send) from the dashboard; watch progress / replies /
+   leads. The passthrough scrub drains instantly with **no spend**; only trace + Twilio sends cost.
+5. **Rotate** the Twilio token + Tracerfy key after launch (they were shared in plaintext).

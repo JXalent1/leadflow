@@ -1,14 +1,24 @@
 // /api/campaign — the paced, resumable outbound SMS engine. (Session 3, Module 3)
 //
-// AUTH: both POST and GET require the admin cookie (isAuthed) — this endpoint sends real
+// AUTH: both POST and GET require an operator session (requireOperator) — this endpoint sends real
 // SMS and spends money, so it must never be world-callable.
 //
-// POST  run or resume the send over ELIGIBLE contacts only.
-//       Body: { dryRun?: boolean, limit?: number, confirm?: boolean, note?: string }
+// POST  run or resume ONE BATCH of the send over ELIGIBLE contacts only.
+//       Body: { dryRun?: boolean, limit?: number, confirm?: boolean, note?: string, runId?: number }
 //         - dryRun  → report eligible count + per-variant split, send NOTHING (always safe).
 //         - real send requires confirm:true AND the send-window check to pass.
 //       `limit` caps how many eligible contacts are FETCHED (and thus attempted), not the
 //       number actually sent — overflow/already-claimed rows are skipped, so sends <= limit.
+//
+//       DRIVEN MULTI-BATCH (v2 Module V3): the client-side pipeline driver calls this repeatedly,
+//       one small batch at a time (so no single call hits the function timeout), passing back the
+//       `runId` it received so it continues its OWN run. The response carries `done` (true when no
+//       eligible contacts remain, or the window closed mid-batch) so the driver knows when to stop.
+//       The run is closed (finished_at) only on the batch that drains it — fixing the old stall
+//       where a timed-out single long run never closed and then blocked the next "Start send".
+//       Each batch STILL goes through getEligibleContacts + the atomic claimForSend (with the V2
+//       opt-out re-check), so suppression/eligibility hold on every batch — auto-resume never
+//       bypasses them.
 // GET   progress JSON: { eligible, sent, pending, in_flight, failed, suppressed, opted_out }.
 //
 // Compliance (load-bearing): the ONLY contacts texted are those returned by
@@ -18,21 +28,27 @@
 // + single-segment enforcement come from lib/sms.ts — never re-implemented here.
 
 import { NextResponse } from "next/server";
-import { isAuthed } from "@/app/actions";
+import { requireOperator } from "@/lib/guard";
+import { resolveClientIdForUser } from "@/lib/access";
 import {
   getEligibleContacts,
   claimForSend,
   setVariant,
   setSendStatus,
   recordMessage,
-  createCampaignRun,
-  finishCampaignRun,
-  hasActiveCampaignRun,
   getSendProgress,
   type Contact,
 } from "@/lib/db";
-import { resolveClient, clientIdFromRequest } from "@/lib/request-client";
-import { clientSender, clientWindow, clientBizName, type Client } from "@/lib/clients";
+import {
+  createCampaignRun,
+  finishCampaignRun,
+  touchCampaignRun,
+  getActiveCampaignRun,
+} from "@/lib/campaign-runs";
+import { requestedClientId, campaignIdFromRequest } from "@/lib/request-client";
+import { resolveCampaignForClient } from "@/lib/campaigns";
+import { getClientById, clientSender, clientWindow, clientBizName, type Client } from "@/lib/clients";
+import { getTargetStatus } from "@/lib/auto-pause";
 import { renderMessage, withinSingleSegment, type Variant } from "@/lib/sms";
 import {
   sendOne,
@@ -79,34 +95,49 @@ function variantSplit(count: number, variants: Variant[]): Record<string, number
 
 export async function POST(req: Request) {
   try {
-    // AUTH GATE — this endpoint sends real SMS; never allow it unauthenticated.
-    if (!(await isAuthed())) {
-      return NextResponse.json({ error: "unauthorized" }, { status: 401 });
-    }
+    // AUTH GATE — operator only; this endpoint sends real SMS.
+    const g = await requireOperator();
+    if (!g.ok) return g.response;
 
-    // Resolve the operator's selected client (default 1). All scoping + send config (window,
-    // rate, sender, copy) come from this record — never env.
-    const client = await resolveClient(req);
+    // Resolve the operator's selected client. All scoping + send config (window, rate, sender,
+    // copy) come from this record — never env.
+    const clientId = resolveClientIdForUser(g.user, requestedClientId(req));
+    if (clientId === null) return NextResponse.json({ error: "forbidden" }, { status: 403 });
+    const client = await getClientById(clientId);
     if (!client) {
       return NextResponse.json({ error: "client_not_found" }, { status: 404 });
     }
-    const clientId = client.id;
     const window = clientWindow(client);
+
+    // A send targets exactly ONE campaign (default = the client's pilot campaign). Eligibility,
+    // the run record, and the concurrent-run guard are all scoped to it; suppression stays
+    // client-level (the eligibility query excludes any phone in this client's opt_outs).
+    const campaign = await resolveCampaignForClient(clientId, campaignIdFromRequest(req));
+    if (!campaign) {
+      return NextResponse.json({ error: "no_campaign" }, { status: 404 });
+    }
+    const campaignId = campaign.id;
 
     const body = await req.json().catch(() => ({}));
     const dryRun = body.dryRun === true;
     const confirm = body.confirm === true;
     const limit = typeof body.limit === "number" && body.limit > 0 ? body.limit : undefined;
     const note = typeof body.note === "string" ? body.note : undefined;
+    // The run the driver is already continuing (omitted on the first batch of a fresh drive).
+    const requestedRunId =
+      typeof body.runId === "number" && Number.isInteger(body.runId) && body.runId > 0
+        ? body.runId
+        : undefined;
 
     const variants = activeVariants();
-    const eligible = await getEligibleContacts(clientId, limit);
+    const eligible = await getEligibleContacts(clientId, { campaignId, limit });
 
     // ---- Dry run: report only, never send. -------------------------------
     if (dryRun) {
       return NextResponse.json({
         dryRun: true,
         clientId,
+        campaignId,
         eligible: eligible.length,
         perVariant: variantSplit(eligible.length, variants),
         variants,
@@ -136,47 +167,137 @@ export async function POST(req: Request) {
         { status: 409 }
       );
     }
+    // ---- Concurrent-run guard + driver-OWN-run continuation. -------------
+    // Resolve any in-flight run for this client+campaign. The driver passes back the runId it is
+    // driving so it can CONTINUE its own run; a caller with no runId (or a stale/foreign one) is
+    // blocked while a different run is active. (The per-contact atomic claim is still the real
+    // no-double-text guarantee even if this guard is raced.)
+    const active = await getActiveCampaignRun(clientId, campaignId);
+
+    // ---- Lead-target auto-pause (v2 Module V6): deliver-then-stop. --------
+    // A BUSINESS gate layered ON TOP of suppression/eligibility — NEVER a relaxation. If the client
+    // has already hit its lead target for the current period, refuse to send (no wasted texts /
+    // credits past the goal); sending resumes automatically when the period rolls over or the
+    // operator raises the target. Enforced HERE in the send route (read fresh each batch), so
+    // hitting Run can never over-send — it is not merely a UI guard. This check only ADDS a stop:
+    // a target NOT met does nothing to suppression (getEligibleContacts/claimForSend still gate
+    // every contact), and a target met never touches eligibility — it just halts this client.
+    const targetStatus = await getTargetStatus(client, new Date());
+    if (targetStatus.met) {
+      // If THIS driver owns the active run, close it so it doesn't linger open blocking the resume.
+      if (active && requestedRunId === active.id) {
+        await finishCampaignRun(
+          clientId,
+          active.id,
+          0,
+          `paused: target met (${targetStatus.leadsThisPeriod}/${targetStatus.target} this ${targetStatus.period})`
+        );
+      }
+      return NextResponse.json({
+        ran: false,
+        done: true,
+        paused: true,
+        reason: "target_met",
+        clientId,
+        campaignId,
+        target: targetStatus.target,
+        period: targetStatus.period,
+        leadsThisPeriod: targetStatus.leadsThisPeriod,
+        nextPeriod: targetStatus.nextPeriod,
+        message: `Target met (${targetStatus.leadsThisPeriod}/${targetStatus.target} this ${targetStatus.period}) — paused until ${targetStatus.nextPeriod}`,
+      });
+    }
+
+    let runId: number;
+    if (active) {
+      if (requestedRunId === active.id) {
+        runId = active.id; // continuing our OWN run — allowed
+      } else {
+        // Someone else's run is active (or a fresh caller with no runId): block, but hand back the
+        // active run id so a resuming driver can adopt it and continue from DB state.
+        return NextResponse.json(
+          {
+            error: "campaign_already_running",
+            message: "Another campaign run is in flight; try again shortly.",
+            runId: active.id,
+          },
+          { status: 409 }
+        );
+      }
+    } else {
+      // No active run (none yet, or a prior driver's run has gone stale/finished) → start fresh.
+      // This is also the RESUME-after-expiry path: requestedRunId may be set but no longer active.
+      if (eligible.length === 0) {
+        return NextResponse.json({ ran: true, done: true, eligible: 0, sent: 0, failed: 0 });
+      }
+      runId = await createCampaignRun(clientId, campaignId, eligible.length, note);
+    }
+
+    // Continuing an OWN run with nothing left to send → close it out (drained).
     if (eligible.length === 0) {
-      return NextResponse.json({ ran: true, eligible: 0, sent: 0, failed: 0, note: "nothing eligible" });
+      await finishCampaignRun(clientId, runId, 0, note ?? "drained (nothing eligible)");
+      return NextResponse.json({ ran: true, runId, done: true, eligible: 0, sent: 0, failed: 0 });
     }
 
-    // Concurrent-run guard: refuse if another run is in flight FOR THIS CLIENT, so two callers
-    // can't both blast the list and defeat pacing. (Per-contact atomic claim still prevents
-    // double-texting even if this guard is raced.)
-    if (await hasActiveCampaignRun(clientId)) {
-      return NextResponse.json(
-        { error: "campaign_already_running", message: "Another campaign run is in flight; try again shortly." },
-        { status: 409 }
-      );
-    }
-
-    // ---- Paced, resumable send loop. -------------------------------------
-    const runId = await createCampaignRun(clientId, eligible.length, note);
+    // ---- Paced send of THIS batch. ---------------------------------------
+    // The run is now OPEN. If anything below throws (a DB error in runSend, a Twilio SDK throw,
+    // the finalize writes), the finally block closes it — an exception must NEVER leave a run open
+    // to 409-block the next Run (that would re-introduce the very stall V3 fixed). The staleness
+    // guard would self-heal in ≤6 min anyway, but closing immediately drops that blackout to zero.
+    // (Review V3 correctness M1.)
     const delay = pacingDelayMs(client.send_rate_per_hour);
-    const result = await runSend(client, eligible, variants, delay);
-    await finishCampaignRun(
-      clientId,
-      runId,
-      result.sent,
-      note ??
-        `sent=${result.sent} failed=${result.failed} overflow=${result.skippedOverflow}` +
-          (result.stoppedForWindow ? " stopped=send_window" : "")
-    );
+    let runClosed = false;
+    try {
+      const result = await runSend(client, eligible, variants, delay);
 
-    return NextResponse.json({
-      ran: true,
-      runId,
-      clientId,
-      eligible: eligible.length,
-      attempted: result.attempted,
-      sent: result.sent,
-      failed: result.failed,
-      skippedOverflow: result.skippedOverflow,
-      skippedClaimed: result.skippedClaimed,
-      stoppedForWindow: result.stoppedForWindow,
-      perVariant: result.perVariant,
-      ratePerHour: sendRatePerHour(client.send_rate_per_hour),
-    });
+      // Are there still eligible contacts after this batch? (Cheap indexed probe — same predicate.)
+      // The run closes (finished_at) ONLY when nothing remains, or the window shut mid-batch; until
+      // then it stays open + heartbeated so it keeps representing the ongoing drive.
+      const remaining = result.stoppedForWindow
+        ? 1 // window closed mid-batch — stop now; leave the rest for a later resume
+        : (await getEligibleContacts(clientId, { campaignId, limit: 1 })).length;
+      const done = result.stoppedForWindow || remaining === 0;
+
+      if (done) {
+        await finishCampaignRun(
+          clientId,
+          runId,
+          result.sent,
+          note ??
+            `sent=${result.sent} failed=${result.failed} overflow=${result.skippedOverflow}` +
+              (result.stoppedForWindow ? " stopped=send_window" : "")
+        );
+      } else {
+        await touchCampaignRun(clientId, runId, result.sent);
+      }
+      runClosed = true; // run is finalized (closed or heartbeated) — finally must not touch it
+
+      return NextResponse.json({
+        ran: true,
+        runId,
+        done,
+        clientId,
+        campaignId,
+        eligible: eligible.length,
+        attempted: result.attempted,
+        sent: result.sent,
+        failed: result.failed,
+        skippedOverflow: result.skippedOverflow,
+        skippedClaimed: result.skippedClaimed,
+        stoppedForWindow: result.stoppedForWindow,
+        perVariant: result.perVariant,
+        ratePerHour: sendRatePerHour(client.send_rate_per_hour),
+      });
+    } finally {
+      // Only fires when the try threw before finalizing — close the run so it can't strand open.
+      // Any contacts actually sent this batch are already committed as 'sent' (so never re-texted);
+      // the operator can immediately re-Run, which starts a fresh run over the remaining not_sent.
+      if (!runClosed) {
+        await finishCampaignRun(clientId, runId, 0, "aborted (exception during send batch)").catch(
+          () => {}
+        );
+      }
+    }
   } catch (err) {
     // Log full detail server-side; return a generic label (raw errors can carry
     // Twilio account IDs / DB connection fragments — never leak them to the client).
@@ -310,10 +431,12 @@ async function runSend(
 
 export async function GET(req: Request) {
   try {
-    if (!(await isAuthed())) {
-      return NextResponse.json({ error: "unauthorized" }, { status: 401 });
-    }
-    const progress = await getSendProgress(clientIdFromRequest(req));
+    const g = await requireOperator();
+    if (!g.ok) return g.response;
+    const clientId = resolveClientIdForUser(g.user, requestedClientId(req));
+    if (clientId === null) return NextResponse.json({ error: "forbidden" }, { status: 403 });
+    const campaign = await resolveCampaignForClient(clientId, campaignIdFromRequest(req));
+    const progress = await getSendProgress(clientId, campaign?.id);
     return NextResponse.json(progress);
   } catch (err) {
     console.error("[campaign] progress failed:", err instanceof Error ? err.message : String(err));

@@ -42,16 +42,18 @@ async function main() {
   const { DEFAULT_CLIENT_ID } = await import("@/lib/clients");
 
   const clientId = arg("client") ? Math.max(1, Number(arg("client"))) : DEFAULT_CLIENT_ID;
+  // Optional campaign scope; omit to scrub ALL the client's matched-unscrubbed across campaigns.
+  const campaignId = arg("campaign") ? Math.max(1, Number(arg("campaign"))) : undefined;
   const batch = Math.max(1, Number(arg("batch") ?? 100));
   const max = arg("max") ? Math.max(1, Number(arg("max"))) : Infinity;
   const delay = Math.max(0, Number(arg("delay") ?? 0));
 
-  console.log(`[scrub] starting — client=${clientId} batch=${batch} max=${max === Infinity ? "ALL" : max} delay=${delay}ms`);
+  console.log(`[scrub] starting — client=${clientId} campaign=${campaignId ?? "ALL"} batch=${batch} max=${max === Infinity ? "ALL" : max} delay=${delay}ms`);
 
   // UPFRONT credit pre-flight: report need-vs-have BEFORE submitting anything. The amount we
   // intend to scrub this run is min(pending, max); refuse cleanly if the balance can't cover it.
   const credits = await getCredits();
-  const pending = await getPendingScrubCount(clientId);
+  const pending = await getPendingScrubCount(clientId, campaignId);
   const intend = Math.min(pending, max);
   const need = intend * SCRUB_CREDITS_PER_PHONE;
   console.log(
@@ -80,7 +82,7 @@ async function main() {
     const limit = Math.min(batch, max - scrubbed);
     let res;
     try {
-      res = await scrubBatch(clientId, { limit });
+      res = await scrubBatch(clientId, { campaignId, limit });
     } catch (err) {
       if (err instanceof InsufficientCreditsError) {
         console.error(

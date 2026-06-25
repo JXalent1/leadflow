@@ -2,94 +2,86 @@
 
 _For the next session — read this first._
 
-_Last updated: 2026-06-24 (Claude Code — v2 Module V1 BUILT + REVIEW-CLEAN)_
+_Last updated: 2026-06-25 (Claude Code — Module N (no-scrub mode) BUILT. Remaining launch blockers:
+deploy-to-prod + seed users. See `launch-readiness.md`.)_
 
 ## TL;DR
-LeadFlow is a self-hosted SMS lead-gen tool; v1 shipped a live pilot for Talan (Tallahassee window
-cleaning, 91 sent). v2 turns it into an agency product ($2,500/mo + 50-leads/mo guarantee per client).
-**v2 Module V1 (multi-tenant foundation) is BUILT, green, AND review-clean** — `clients` table,
-`client_id` on every table, every query scoped by client, Talan migrated in as **client 1 with ZERO
-behavior change**, per-client config moved env→record. The 3-reviewer client-isolation pass found **no
-Critical/High**; 5 cheap Medium/Low fixes applied + re-verified. **V1 is done — next is V2.**
+LeadFlow is a self-hosted SMS lead-gen tool; v1 shipped a live pilot for Talan (91 sent). v2 turns it
+into an agency product. **V1–V6 + Module N are built (locally, uncommitted).** The operator wants to
+launch a **~2,500-contact campaign that sends with `scrub_mode='none'`** (no vendor DNC scrub). Module N
+just landed, so that path now exists. The launch-readiness report (`launch-readiness.md`) is **still
+NO-GO**, but only on two OPERATIONAL blockers now (deploy + seed users), not on missing code.
 
-## ▶ Immediate next: generate the V2 prompt — campaigns + CSV uploader
-Per `modules-v2.md` row **V2**: a `campaigns` table (a client runs many campaigns over time) + a **CSV
-uploader** so you drop a list into a client and go (no more scripts). Write `sessions/v2-session-2-*`
-one prompt at a time (same cadence as v1), building on the now-multi-tenant-native foundation.
+## ▶ Immediate next: clear the 2 remaining launch blockers
+1. **Commit + push + deploy to Vercel.** Local `HEAD` = `origin/main` = `5a19d5c` (V1). All of V2–V6 +
+   Module N are uncommitted. The deployed `leadflow1` app is at V1 — no login, campaigns, cockpit,
+   auto-pause, or the no-scrub path. Deploy the working tree **and apply the schema in prod**
+   (`npm run schema` adds the `scrub_mode` column, idempotent).
+2. **Seed users + set `SESSION_SECRET` in Vercel.** The live DB has **0 users**; V5 login replaced the
+   shared admin password, so nobody can log in. Run `npm run seed:users` (locally + prod) with
+   `SESSION_SECRET` (≥32) set.
 
-## ⚠ Logged gate before onboarding a 2nd client (from the V1 review — do NOT skip)
-`?clientId=` is accepted from any authenticated operator with **no per-client access control**, so once
-a 2nd client exists an operator could reach another client's data/sender via `?clientId=N`. It's
-**dormant today** (single shared admin password, only client 1 exists → `?clientId=2` returns 404) and
-solving it properly IS **module V5** (client logins / scoped access) — so it was deliberately NOT built
-in V1. But it is a HARD prerequisite before a real client #2 goes live. (Eligibility/suppression are
-still correctly scoped to whatever clientId is supplied — this is an access-control gap, not a
-cross-client data leak.)
+Also owed (not launch-blocking): a **single-reviewer correctness pass on Module N** (it touches
+send-eligibility) and the **focused send-path review of V6** (the auto-pause gate), before V7.
 
-## V1 review pass — DONE (2026-06-24), no Critical/High
-3 read-only reviewers (isolation / compliance / correctness, Sonnet) confirmed the load-bearing claim
-HOLDS: no data/suppression crosses a client boundary (both directions), the webhook validates the
-signature before resolving the client + routes strictly by `To`→client, migration correct, Talan
-byte-unchanged. **Applied:** schema CREATE-then-DROP index order; `import-csv --fresh` client-scoped
-(was a global TRUNCATE); `.env.example` timezone fix + per-client-config note; documented
-`processInbound`'s client-binding invariant and the `getClientByInboundNumber` from_number-only
-limitation. Full findings in `status.md` + `overview.md`.
+## What Module N shipped (2026-06-25 — all green)
+- **Schema:** `campaigns.scrub_mode text NOT NULL DEFAULT 'vendor'` ('vendor'|'none'); pilot + existing
+  rows backfilled to 'vendor' (Talan byte-unchanged). Applied live (`npm run schema` = 65 stmts).
+- **Passthrough:** `lib/scrub-passthrough.ts passthroughScrubBatch(clientId, {campaignId, limit})` — one
+  scoped UPDATE marks matched + with-phone + `pending` contacts `scrub_status='clean'`, NO Tracerfy
+  call / credits / `scrub_jobs` row. Mirrors `getContactsForScrub`'s predicate minus the vendor call.
+- **Route:** `app/api/scrub` branches on `campaign.scrub_mode` ('none' → passthrough, else `scrubBatch`
+  byte-unchanged). Same `{scrubbed,clean,suppressed}` response, so `pipeline-runner.tsx` is untouched.
+- **Setters:** `POST /api/campaigns` takes optional `scrubMode` (default 'vendor'); `PATCH
+  /api/campaigns {campaignId, scrubMode}` flips an existing campaign (operator-only, client-scoped,
+  validates the value). `lib/campaigns.ts` gained `ScrubMode`/`isScrubMode`/`setCampaignScrubMode`.
+- **Test:** `npm run test:passthrough` (24/24). Deviation: the explicit live HTTP smoke was covered by
+  this fixture (same live-DB code path; login is a server action + 0 users seeded → scripted HTTP login
+  is brittle; the route is a thin auth+branch wrapper proven by tsc+build).
 
-## What V1 shipped (all verified green)
-- **Schema (`db/schema.sql`, applied via `npm run schema`):** new `clients` table (status, plan $,
-  lead_guarantee, billing_day, `from_number`/`messaging_service_sid`, `biz_name`, `message_template`,
-  `forward_phone`, send window/timezone/rate, `optout_confirmation`, `branding` jsonb). Talan = **client
-  1** (verified: biz_name NULL, +18508213720, 10–19 America/New_York, rate 60, guarantee 50, plan
-  250000, verbatim template + opt-out copy). `client_id int NOT NULL REFERENCES clients(id)` + index on
-  every data table (existing rows backfilled to 1 via `DEFAULT 1`, then default DROPPED). Unique indexes
-  now **per-client**: `opt_outs(client_id, phone)`, `messages(client_id, twilio_sid)` (legacy global
-  ones dropped).
-- **Scoping:** every helper in `lib/db.ts`, `lib/inbox-db.ts`, **new `lib/dashboard-db.ts`**,
-  `lib/trace-jobs.ts`, `lib/scrub-jobs.ts`, and the batch libs (`lib/skiptrace traceBatch`,
-  `lib/scrub scrubBatch`) takes `clientId` and filters/sets `client_id`. **No query crosses clients.**
-- **Current-client resolution:** `lib/request-client.ts` — operator routes/pages default to client 1
-  with a `?clientId=` override. The **webhook resolves the client by the `To` number**
-  (`lib/clients.ts getClientByInboundNumber`); unknown number → ack + no-op (touches nobody's data).
-- **Config env→record (`lib/clients.ts`):** `renderMessage` is now **template-driven** off
-  `client.message_template`; `sendOne` takes the client's sender; the send window/rate, lead-forward
-  number, and opt-out confirmation all come from the client row. Account-level secrets stay in env
-  (`TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN`, `TRACERFY_API_KEY`, `DATABASE_URL`, `ADMIN_PASSWORD`).
-- **Proof:** `tsc` clean, `npm run build` green, **`npm test` 160 green**, **`npm run test:isolation`
-  22/22** (cross-client isolation both directions + webhook To-routing + template-change-affects-one-
-  client + client-1-byte-unchanged + fixtures cleaned up). DB confirmed back to 1 client, 0 non-client-1
-  rows after the fixture.
+## Gotchas the next session must know
+- **To run a no-scrub campaign:** create it with `scrubMode:'none'` (or PATCH an existing one), then the
+  pipeline's Run drives trace → (passthrough) scrub → send normally — the scrub stage drains instantly
+  with no spend. The TRACE stage still spends Tracerfy (~$0.02/contact) — no-scrub only skips the SCRUB.
+- **Opt-out exclusion is independent of `scrub_status`** — Module N must never change that. The
+  passthrough marks clean; `getEligibleContacts`/`claimForSend` still exclude opted-out phones. Keep
+  `test:passthrough` + `test:isolation` green.
+- **`apply-schema` splits on `;` and strips `--` comments** — NO `;` inside a comment (Module N's first
+  schema comment had one and broke the apply; fixed by rewording). Each statement individually idempotent.
 
-## Gotchas the reviewer/next session must know
-- **`renderMessage` signature CHANGED:** was `renderMessage(variant, contact, biz)`, now
-  `renderMessage(template, contact, bizName?)`. The unused B/C creative variants were dropped (pilot
-  always ran `AB_VARIANTS=A`). A `{...}` span in a template is an **optional clause** dropped when it
-  would overflow one GSM-7 segment (or a placeholder inside resolves empty) — this reproduces Talan's
-  single-segment address fallback. Talan's template lives in `clients.message_template` AND as
-  `TALAN_MESSAGE_TEMPLATE` in `lib/sms.ts` (kept in sync for tests; schema seed must match).
-- **`client_id` has NO default** (dropped after backfill) — every INSERT must set it. This is
-  deliberate: a forgotten `client_id` should fail loudly, not silently land in client 1.
-- **apply-schema is naive:** it splits `db/schema.sql` on `;` and strips `--` comments — so **no
-  semicolon may appear anywhere, including inside a comment**, and no DO/PL-pgSQL blocks. (This bit us
-  this session; fixed.)
-- **`forwardLead` falls back to `TALAN_FORWARD_PHONE` env for client 1 ONLY** (Talan's seeded
-  `forward_phone` is NULL because the real number is a secret). The fallback is client-1-scoped so it
-  can never leak across clients. To fully decouple Talan from env, set client 1's `forward_phone` in the
-  DB later.
-- **Scripts gained `--client=N` (default 1):** `npm run trace/scrub/ingest/import`. `npm run
-  test:isolation` is the isolation fixture.
-- **Pre-existing, NOT fixed (out of V1 scope):** `lib/tracerfy.ts` is 536 lines (>500). Untouched this
-  session; flag for a later split.
-- **Live DB note:** the Neon DB now reflects v2 (clients + client_id everywhere). Talan's data is intact
-  and all scoped to client 1 (500 contacts, 101 messages, 5 opt_outs).
+## What's verified green right now (2026-06-25)
+`npx tsc --noEmit` clean; `npm run build` green; `npm test` = **208**; `npm run test:isolation` = **28/28**;
+`npm run test:access` pass; `npm run test:cockpit` pass; `npm run test:auto-pause` pass; `npm run
+smoke:webhook` = **5/5**. Send window = 10:00–19:00 America/New_York `[start,end)` (`lib/twilio.ts`),
+real send refuses outside it + re-checks each loop; live rate via `PATCH /api/client`. Eligibility +
+opt-out suppression intact and independent of the scrub flag (`lib/db.ts:90–94`).
+
+## Live DB state (pristine)
+1 client (id 1, active) · 1 campaign ("Tallahassee pilot", sending) · 500 contacts (91 sent, 91 clean) ·
+**0 users** · 0 invoices · 5 opt_outs. The readiness pass created no throwaway rows; all fixtures
+self-cleaned.
+
+## Operator to-dos before the 2,500 launch (full list in launch-readiness.md)
+- Build Module N → deploy the tree → seed users + `SESSION_SECRET` in Vercel (the 3 blockers above).
+- **Fund Tracerfy ~$50** for the skip-trace of the 2,500 (list has no phones; ~$0.02/trace). No-scrub
+  mode skips the *scrub* spend, not the *trace* spend.
+- **Raise the send rate to ~300/hr** (off the 60/hr default) to clear 2,500 inside the 9h window; confirm
+  it's within the Twilio 10DLC daily throughput cap.
+- Set client 1's `from_number` / `forward_phone` (Talan's cell) / send window in the client record;
+  create the 2,500 campaign with `scrub_mode='none'` (once Module N exists).
+- Rotate the Twilio token + Tracerfy key (shared in plaintext).
 
 ## Compliance reminder (unchanged hard requirements)
 Never text a scrub-flagged / no-match / opted-out / unscrubbed number; honor STOP instantly +
-permanently. V1 only added client *scoping* around the existing compliance LOGIC (fail-closed scrub,
-STOP suppression, signature validation) — and now suppression/opt-outs are **per-client** (one client's
-opt-out never suppresses or leaks into another's, and never fails to suppress within its own client).
-The isolation fixture asserts both directions; keep it green.
+permanently. Module N must mark `scrub_status='clean'` ONLY and leave `getEligibleContacts` /
+`claimForSend` / the inbound webhook / opt-out logic byte-unchanged — the opt_outs exclusion is
+independent of the scrub flag, so an opted-out contact stays excluded even when passthrough marks it
+clean. Prove that in Module N's fixture + its single-reviewer correctness pass.
 
-## Open questions / pending input (carried from v1, still true)
-- Talan's cell (`TALAN_FORWARD_PHONE` / client 1 `forward_phone`) for the lead ping.
-- Per-client login vs shared admin password (client logins are module V5).
-- Rotate the Twilio token + Tracerfy key after the pilot (shared in chat in plaintext).
+## Gotchas carried forward
+- `apply-schema` splits on `;` and strips `--` comments — no `;` inside a comment; each statement
+  individually idempotent; no DO/PL-pgSQL blocks.
+- `SESSION_SECRET` REQUIRED (≥32), fail-closed (`lib/auth.ts:99`). Login throttle is in-memory
+  (per-instance) — durable limiter still deferred. `lib/tracerfy.ts` is 536 lines (>500, pre-existing).
+- The V6 auto-pause gate returns HTTP 200 `done:true` (not 4xx) so the pipeline driver stops cleanly —
+  don't "fix" it to a 4xx.

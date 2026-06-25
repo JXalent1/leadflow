@@ -1,3 +1,4 @@
+import "server-only";
 import { neon } from "@neondatabase/serverless";
 
 // Single source of truth for the DB connection. Neon via the Vercel integration.
@@ -21,6 +22,7 @@ export const sql = neon(connectionString);
 export interface Contact {
   id: number;
   client_id: number;
+  campaign_id: number;
   first_name: string | null;
   last_name: string | null;
   address: string;
@@ -49,37 +51,54 @@ export interface NewContact {
 
 export type MessageDirection = "outbound" | "inbound";
 
+/**
+ * Scope for a contact selection (v2 Module V2): which campaign (omit = all the client's
+ * campaigns) and an optional row cap. A null/omitted campaignId selects across the client.
+ */
+export interface ContactScope {
+  campaignId?: number;
+  limit?: number;
+}
+
 // ---- Helpers ---------------------------------------------------------------
 
 /**
- * Contacts eligible to be texted, for ONE client. (Session 3 — the single send gate.)
+ * Contacts eligible to be texted, for ONE client (optionally ONE campaign). (Session 3 — the
+ * single send gate; extended in v2 Module V2 with campaign scope + client-level suppression.)
  *
- * Eligibility = same client AND phone present AND not suppressed AND scrub_status='clean'
- * (the scrub ran and passed — a matched-but-unscrubbed contact is 'pending' → NOT eligible)
- * AND not already sent. This is the only query that decides who can be texted — never relax
- * it, and never drop the client_id scope (one client may never text another's contacts).
+ * Eligibility = same client (and campaign, if scoped) AND phone present AND not suppressed AND
+ * scrub_status='clean' (the scrub ran and passed — a matched-but-unscrubbed contact is 'pending'
+ * → NOT eligible) AND not already sent AND the phone is NOT in this client's opt_outs.
+ *
+ * The opt_outs exclusion is LOAD-BEARING and CLIENT-level (not campaign-level): a person who
+ * opted out under ANY of the client's campaigns is excluded from EVERY campaign, current and
+ * future — even a brand-new contact row in a new campaign with the same number. We compare on
+ * the last-10 digits (same normalization as findContactByPhone) so formatting never misses a
+ * suppression. Never relax this query, never drop the client_id scope, never make the opt_out
+ * check campaign-scoped.
  */
-export async function getEligibleContacts(clientId: number, limit?: number): Promise<Contact[]> {
-  const rows = limit
-    ? await sql`
-        SELECT * FROM contacts
-        WHERE client_id = ${clientId}
-          AND phone IS NOT NULL
-          AND suppressed = false
-          AND scrub_status = 'clean'
-          AND send_status = 'not_sent'
-        ORDER BY id
-        LIMIT ${limit}
-      `
-    : await sql`
-        SELECT * FROM contacts
-        WHERE client_id = ${clientId}
-          AND phone IS NOT NULL
-          AND suppressed = false
-          AND scrub_status = 'clean'
-          AND send_status = 'not_sent'
-        ORDER BY id
-      `;
+export async function getEligibleContacts(
+  clientId: number,
+  scope: ContactScope = {}
+): Promise<Contact[]> {
+  const { campaignId, limit } = scope;
+  const rows = await sql`
+    SELECT * FROM contacts c
+    WHERE c.client_id = ${clientId}
+      AND (${campaignId ?? null}::int IS NULL OR c.campaign_id = ${campaignId ?? null}::int)
+      AND c.phone IS NOT NULL
+      AND c.suppressed = false
+      AND c.scrub_status = 'clean'
+      AND c.send_status = 'not_sent'
+      AND NOT EXISTS (
+        SELECT 1 FROM opt_outs o
+        WHERE o.client_id = ${clientId}
+          AND right(regexp_replace(o.phone, '[^0-9]', '', 'g'), 10)
+            = right(regexp_replace(c.phone, '[^0-9]', '', 'g'), 10)
+      )
+    ORDER BY c.id
+    LIMIT ${limit ?? null}
+  `;
   return rows as Contact[];
 }
 
@@ -99,12 +118,23 @@ export async function setScrubStatus(
  * Atomically claim a contact for sending. (Session 3 — idempotency / no-double-text.)
  * Conditionally flips not_sent -> sending in a single statement so a crash or a concurrent
  * re-run can never select the same contact twice. Returns true only if THIS call won the row.
+ *
+ * Defense-in-depth (v2 V2 review): the claim ALSO re-checks the client's opt_outs (same
+ * client-level last-10-digit predicate as getEligibleContacts), so even if a STOP arrives in the
+ * race window between getEligibleContacts and this claim mid-run, the row won't be claimed and the
+ * contact is never texted. The eligibility query is the primary gate; this closes the TOCTOU race.
  */
 export async function claimForSend(clientId: number, id: number): Promise<boolean> {
   const rows = await sql`
     UPDATE contacts
     SET send_status = 'sending'
     WHERE id = ${id} AND client_id = ${clientId} AND send_status = 'not_sent'
+      AND NOT EXISTS (
+        SELECT 1 FROM opt_outs o
+        WHERE o.client_id = contacts.client_id
+          AND right(regexp_replace(o.phone, '[^0-9]', '', 'g'), 10)
+            = right(regexp_replace(contacts.phone, '[^0-9]', '', 'g'), 10)
+      )
     RETURNING id
   `;
   return rows.length > 0;
@@ -124,55 +154,17 @@ export async function setSendStatus(
   await sql`UPDATE contacts SET send_status = ${status} WHERE id = ${id} AND client_id = ${clientId}`;
 }
 
-/** Open a campaign run row for a client; returns its id. (Session 3) */
-export async function createCampaignRun(
-  clientId: number,
-  totalEligible: number,
-  note?: string
-): Promise<number> {
-  const rows = await sql`
-    INSERT INTO campaign_runs (client_id, total_eligible, note)
-    VALUES (${clientId}, ${totalEligible}, ${note ?? null})
-    RETURNING id
-  `;
-  return (rows[0] as { id: number }).id;
-}
-
-/** Update a campaign run's sent tally / note and stamp finished_at when the batch ends. (Session 3) */
-export async function finishCampaignRun(
-  clientId: number,
-  id: number,
-  sentCount: number,
-  note?: string
-): Promise<void> {
-  await sql`
-    UPDATE campaign_runs
-    SET sent_count = ${sentCount}, note = ${note ?? null}, finished_at = now()
-    WHERE id = ${id} AND client_id = ${clientId}
-  `;
-}
-
 /**
- * Is a campaign run currently in flight FOR THIS CLIENT? (Session 3 review — concurrent-run
- * guard.) "Active" = finished_at IS NULL and started within `withinMinutes` (default 6, just
- * above the 5-min function maxDuration) — older unfinished rows are treated as dead so a crash
- * never blocks future runs forever. Scoped per client so one client's run can't block another's.
- * Not a perfect mutex (stateless HTTP driver); the atomic per-contact claim is the real
- * no-double-text guarantee — this just stops casual concurrent runs from defeating pacing.
+ * Send-path progress for one client, optionally scoped to one campaign. (Session 3; campaign
+ * scope + client-level opt_out exclusion added v2 Module V2.) The eligible/pending counts mirror
+ * getEligibleContacts EXACTLY — same predicate including the client-level opt_outs exclusion — so
+ * the dashboard's "eligible" never overcounts a person the client has opted out. opted_out is the
+ * client's whole opt-out list (it is suppression-by-phone across all campaigns, not per-campaign).
  */
-export async function hasActiveCampaignRun(clientId: number, withinMinutes = 6): Promise<boolean> {
-  const rows = await sql`
-    SELECT 1 FROM campaign_runs
-    WHERE client_id = ${clientId}
-      AND finished_at IS NULL
-      AND started_at > now() - make_interval(mins => ${withinMinutes})
-    LIMIT 1
-  `;
-  return rows.length > 0;
-}
-
-/** Send-path progress for one client. (Session 3) */
-export async function getSendProgress(clientId: number): Promise<{
+export async function getSendProgress(
+  clientId: number,
+  campaignId?: number
+): Promise<{
   eligible: number;
   sent: number;
   pending: number;
@@ -183,23 +175,30 @@ export async function getSendProgress(clientId: number): Promise<{
 }> {
   const rows = await sql`
     SELECT
-      COUNT(*) FILTER (
-        WHERE phone IS NOT NULL AND suppressed = false
-          AND scrub_status = 'clean' AND send_status = 'not_sent'
-      )::int                                                          AS eligible,
-      COUNT(*) FILTER (WHERE send_status = 'sent')::int               AS sent,
-      -- pending = sendable backlog (mirrors the eligibility predicate exactly).
-      COUNT(*) FILTER (
-        WHERE phone IS NOT NULL AND suppressed = false
-          AND scrub_status = 'clean' AND send_status = 'not_sent'
-      )::int                                                          AS pending,
+      COUNT(*) FILTER (WHERE is_eligible)::int                AS eligible,
+      COUNT(*) FILTER (WHERE send_status = 'sent')::int       AS sent,
+      COUNT(*) FILTER (WHERE is_eligible)::int                AS pending,
       -- in_flight = rows claimed but not yet finalized; a stuck count here means a
       -- run died mid-send (manual inspection — do NOT auto-reset, see campaign route).
-      COUNT(*) FILTER (WHERE send_status = 'sending')::int            AS in_flight,
-      COUNT(*) FILTER (WHERE send_status = 'failed')::int             AS failed,
-      COUNT(*) FILTER (WHERE suppressed = true)::int                  AS suppressed
-    FROM contacts
-    WHERE client_id = ${clientId}
+      COUNT(*) FILTER (WHERE send_status = 'sending')::int    AS in_flight,
+      COUNT(*) FILTER (WHERE send_status = 'failed')::int     AS failed,
+      COUNT(*) FILTER (WHERE suppressed = true)::int          AS suppressed
+    FROM (
+      SELECT
+        c.send_status,
+        c.suppressed,
+        (c.phone IS NOT NULL AND c.suppressed = false AND c.scrub_status = 'clean'
+           AND c.send_status = 'not_sent'
+           AND NOT EXISTS (
+             SELECT 1 FROM opt_outs o
+             WHERE o.client_id = c.client_id
+               AND right(regexp_replace(o.phone, '[^0-9]', '', 'g'), 10)
+                 = right(regexp_replace(c.phone, '[^0-9]', '', 'g'), 10)
+           )) AS is_eligible
+      FROM contacts c
+      WHERE c.client_id = ${clientId}
+        AND (${campaignId ?? null}::int IS NULL OR c.campaign_id = ${campaignId ?? null}::int)
+    ) t
   `;
   const r = rows[0] as {
     eligible: number;
@@ -214,11 +213,18 @@ export async function getSendProgress(clientId: number): Promise<{
   return { ...r, opted_out };
 }
 
-/** Insert one contact for a client. Returns the new id. Used by the CSV importer (Session 1). */
-export async function insertContact(clientId: number, c: NewContact): Promise<number> {
+/**
+ * Insert one contact for a client + campaign. Returns the new id. (CSV importer / uploader.)
+ * campaign_id is required (the column has no default — a forgotten campaign_id fails loudly).
+ */
+export async function insertContact(
+  clientId: number,
+  campaignId: number,
+  c: NewContact
+): Promise<number> {
   const rows = await sql`
-    INSERT INTO contacts (client_id, first_name, last_name, address, city, state, zip)
-    VALUES (${clientId}, ${c.first_name}, ${c.last_name}, ${c.address}, ${c.city}, ${c.state}, ${c.zip})
+    INSERT INTO contacts (client_id, campaign_id, first_name, last_name, address, city, state, zip)
+    VALUES (${clientId}, ${campaignId}, ${c.first_name}, ${c.last_name}, ${c.address}, ${c.city}, ${c.state}, ${c.zip})
     RETURNING id
   `;
   return (rows[0] as { id: number }).id;
@@ -233,20 +239,23 @@ export async function markSuppressed(clientId: number, id: number, reason: strin
   `;
 }
 
-/** Contacts still needing a skip trace, for a client. Idempotency hinges on this filter. (Session 2) */
-export async function getContactsForSkiptrace(clientId: number, limit?: number): Promise<Contact[]> {
-  const rows = limit
-    ? await sql`
-        SELECT * FROM contacts
-        WHERE client_id = ${clientId} AND skiptrace_status = 'pending'
-        ORDER BY id
-        LIMIT ${limit}
-      `
-    : await sql`
-        SELECT * FROM contacts
-        WHERE client_id = ${clientId} AND skiptrace_status = 'pending'
-        ORDER BY id
-      `;
+/**
+ * Contacts still needing a skip trace, for a client (optionally one campaign). Idempotency hinges
+ * on the skiptrace_status='pending' filter. (Session 2; campaign scope v2 V2.)
+ */
+export async function getContactsForSkiptrace(
+  clientId: number,
+  scope: ContactScope = {}
+): Promise<Contact[]> {
+  const { campaignId, limit } = scope;
+  const rows = await sql`
+    SELECT * FROM contacts
+    WHERE client_id = ${clientId}
+      AND (${campaignId ?? null}::int IS NULL OR campaign_id = ${campaignId ?? null}::int)
+      AND skiptrace_status = 'pending'
+    ORDER BY id
+    LIMIT ${limit ?? null}
+  `;
   return rows as Contact[];
 }
 
@@ -256,27 +265,22 @@ export async function getContactsForSkiptrace(clientId: number, limit?: number):
  * suppressed=false, so without this filter it would be re-selected + re-billed every chunk
  * (the 2026-06-23 re-billing bug). Already-scrubbed (clean OR flagged) rows are excluded.
  */
-export async function getContactsForScrub(clientId: number, limit?: number): Promise<Contact[]> {
-  const rows = limit
-    ? await sql`
-        SELECT * FROM contacts
-        WHERE client_id = ${clientId}
-          AND skiptrace_status = 'matched'
-          AND phone IS NOT NULL
-          AND suppressed = false
-          AND scrub_status = 'pending'
-        ORDER BY id
-        LIMIT ${limit}
-      `
-    : await sql`
-        SELECT * FROM contacts
-        WHERE client_id = ${clientId}
-          AND skiptrace_status = 'matched'
-          AND phone IS NOT NULL
-          AND suppressed = false
-          AND scrub_status = 'pending'
-        ORDER BY id
-      `;
+export async function getContactsForScrub(
+  clientId: number,
+  scope: ContactScope = {}
+): Promise<Contact[]> {
+  const { campaignId, limit } = scope;
+  const rows = await sql`
+    SELECT * FROM contacts
+    WHERE client_id = ${clientId}
+      AND (${campaignId ?? null}::int IS NULL OR campaign_id = ${campaignId ?? null}::int)
+      AND skiptrace_status = 'matched'
+      AND phone IS NOT NULL
+      AND suppressed = false
+      AND scrub_status = 'pending'
+    ORDER BY id
+    LIMIT ${limit ?? null}
+  `;
   return rows as Contact[];
 }
 
@@ -370,9 +374,13 @@ export async function recordOptOut(
   contactId: number | null,
   phone: string
 ): Promise<void> {
+  // Store the suppression key normalized to last-10 digits so the (client_id, phone) unique index
+  // and the eligibility opt_outs match are on a canonical form. Callers already pass normalized
+  // phones today; this makes the invariant hold regardless of caller (v2 V2 review, defense-in-depth).
+  const normalized = phone.replace(/[^0-9]/g, "").slice(-10) || phone;
   await sql`
     INSERT INTO opt_outs (client_id, contact_id, phone)
-    VALUES (${clientId}, ${contactId}, ${phone})
+    VALUES (${clientId}, ${contactId}, ${normalized})
     ON CONFLICT (client_id, phone) DO NOTHING
   `;
 }
@@ -400,8 +408,28 @@ export async function createLead(args: {
   return (rows[0] as { id: number }).id;
 }
 
-/** Dashboard counts for one client. (Session 1) */
-export async function getContactCounts(clientId: number): Promise<{
+/**
+ * Count a client's leads created within a [startISO, endISO) window. (v2 Module V6 — the
+ * deliver-then-stop gate.) Scoped to one client_id; the half-open window (start inclusive, end
+ * exclusive) mirrors the cockpit/portal cycle counting so the auto-pause period is off-by-one safe.
+ */
+export async function countLeadsInPeriod(
+  clientId: number,
+  startISO: string,
+  endISO: string
+): Promise<number> {
+  const rows = await sql`
+    SELECT COUNT(*)::int AS n FROM leads
+    WHERE client_id = ${clientId} AND created_at >= ${startISO} AND created_at < ${endISO}
+  `;
+  return (rows[0] as { n: number }).n;
+}
+
+/** Dashboard counts for one client (optionally one campaign). (Session 1; campaign scope v2 V2) */
+export async function getContactCounts(
+  clientId: number,
+  campaignId?: number
+): Promise<{
   total: number;
   withPhone: number;
   suppressed: number;
@@ -413,6 +441,7 @@ export async function getContactCounts(clientId: number): Promise<{
       COUNT(*) FILTER (WHERE suppressed = true)::int         AS suppressed
     FROM contacts
     WHERE client_id = ${clientId}
+      AND (${campaignId ?? null}::int IS NULL OR campaign_id = ${campaignId ?? null}::int)
   `;
   const r = rows[0] as { total: number; with_phone: number; suppressed: number };
   return { total: r.total, withPhone: r.with_phone, suppressed: r.suppressed };

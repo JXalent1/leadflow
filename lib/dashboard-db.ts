@@ -44,44 +44,70 @@ export interface OptOutRow {
   created_at: string;
 }
 
-/** Extra count cards not covered by getContactCounts/getSendProgress, for one client. */
-export async function getDashboardExtraCounts(clientId: number): Promise<{
+/**
+ * Extra count cards not covered by getContactCounts/getSendProgress, for one client + campaign.
+ * (campaign scope added v2 V2.) scrubbedClean is the campaign's clean contacts; leads counts the
+ * campaign's leads (leads joined to a contact in this campaign).
+ */
+export async function getDashboardExtraCounts(
+  clientId: number,
+  campaignId: number
+): Promise<{
   scrubbedClean: number;
   leads: number;
 }> {
   const rows = await sql`
     SELECT
-      (SELECT COUNT(*) FROM contacts WHERE client_id = ${clientId} AND scrub_status = 'clean')::int AS scrubbed_clean,
-      (SELECT COUNT(*) FROM leads WHERE client_id = ${clientId})::int                               AS leads
+      (SELECT COUNT(*) FROM contacts
+         WHERE client_id = ${clientId} AND campaign_id = ${campaignId}
+           AND scrub_status = 'clean')::int                                              AS scrubbed_clean,
+      (SELECT COUNT(*) FROM leads l
+         JOIN contacts c ON c.id = l.contact_id AND c.client_id = l.client_id
+         WHERE l.client_id = ${clientId} AND c.campaign_id = ${campaignId})::int          AS leads
   `;
   const r = rows[0] as { scrubbed_clean: number; leads: number };
   return { scrubbedClean: r.scrubbed_clean, leads: r.leads };
 }
 
-/** Most-recent leads (one client) joined to their contact (name, address, phone). Newest first. */
-export async function getRecentLeads(clientId: number, limit = 50): Promise<LeadRow[]> {
+/** Most-recent leads (one client + campaign) joined to their contact. Newest first. */
+export async function getRecentLeads(
+  clientId: number,
+  campaignId: number,
+  limit = 50
+): Promise<LeadRow[]> {
   const rows = await sql`
     SELECT
       l.id, l.contact_id, l.reply_text, l.forwarded, l.forwarded_at, l.status, l.created_at,
       c.first_name, c.last_name, c.address, c.phone
     FROM leads l
-    LEFT JOIN contacts c ON c.id = l.contact_id AND c.client_id = l.client_id
-    WHERE l.client_id = ${clientId}
+    JOIN contacts c ON c.id = l.contact_id AND c.client_id = l.client_id
+    WHERE l.client_id = ${clientId} AND c.campaign_id = ${campaignId}
     ORDER BY l.created_at DESC, l.id DESC
     LIMIT ${limit}
   `;
   return rows as LeadRow[];
 }
 
-/** Most-recent inbound messages (one client) joined to their contact. Newest first. */
-export async function getRecentInbound(clientId: number, limit = 50): Promise<InboundRow[]> {
+/**
+ * Most-recent inbound messages for one client + campaign. Newest first. (campaign scope v2 V2.)
+ * LEFT JOIN + `OR m.contact_id IS NULL` so an ORPHAN inbound — a STOP/reply from a number we have
+ * no contact row for (messages has no campaign_id to scope it by) — is still surfaced rather than
+ * silently dropped. Orphan opt-outs also appear in the (client-level) opt-out list.
+ */
+export async function getRecentInbound(
+  clientId: number,
+  campaignId: number,
+  limit = 50
+): Promise<InboundRow[]> {
   const rows = await sql`
     SELECT
       m.id, m.contact_id, m.body, m.created_at,
       c.first_name, c.last_name, c.phone
     FROM messages m
     LEFT JOIN contacts c ON c.id = m.contact_id AND c.client_id = m.client_id
-    WHERE m.client_id = ${clientId} AND m.direction = 'inbound'
+    WHERE m.client_id = ${clientId}
+      AND m.direction = 'inbound'
+      AND (c.campaign_id = ${campaignId} OR m.contact_id IS NULL)
     ORDER BY m.created_at DESC, m.id DESC
     LIMIT ${limit}
   `;

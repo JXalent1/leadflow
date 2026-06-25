@@ -8,8 +8,10 @@
 // Returns: { traced, matched, noMatch }
 
 import { NextResponse } from "next/server";
-import { isAuthed } from "@/app/actions";
-import { clientIdFromRequest } from "@/lib/request-client";
+import { requireOperator } from "@/lib/guard";
+import { resolveClientIdForUser } from "@/lib/access";
+import { requestedClientId, campaignIdFromRequest } from "@/lib/request-client";
+import { resolveCampaignForClient } from "@/lib/campaigns";
 import { traceBatch, InsufficientCreditsError } from "@/lib/skiptrace";
 import type { TraceType } from "@/lib/tracerfy";
 
@@ -18,17 +20,23 @@ export const maxDuration = 300;
 
 export async function POST(req: Request) {
   try {
-    // AUTH GATE — skip-tracing spends Tracerfy credits; never allow it unauthenticated.
-    if (!(await isAuthed())) {
-      return NextResponse.json({ error: "unauthorized" }, { status: 401 });
-    }
+    // AUTH GATE — operator only; skip-tracing spends Tracerfy credits.
+    const g = await requireOperator();
+    if (!g.ok) return g.response;
+    const clientId = resolveClientIdForUser(g.user, requestedClientId(req));
+    if (clientId === null) return NextResponse.json({ error: "forbidden" }, { status: 403 });
 
     const body = await req.json().catch(() => ({}));
     const limit = typeof body.limit === "number" ? body.limit : undefined;
     const traceType: TraceType = body.traceType === "advanced" ? "advanced" : "normal";
 
-    const result = await traceBatch(clientIdFromRequest(req), { limit, traceType });
-    return NextResponse.json(result);
+    // Scope the trace to the selected campaign (default = the client's pilot campaign).
+    const campaign = await resolveCampaignForClient(clientId, campaignIdFromRequest(req));
+    if (!campaign) {
+      return NextResponse.json({ error: "no_campaign" }, { status: 404 });
+    }
+    const result = await traceBatch(clientId, { campaignId: campaign.id, limit, traceType });
+    return NextResponse.json({ ...result, campaignId: campaign.id });
   } catch (err) {
     if (err instanceof InsufficientCreditsError) {
       return NextResponse.json(

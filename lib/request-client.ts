@@ -1,31 +1,41 @@
 /**
- * lib/request-client.ts — resolve the "current client" for an OPERATOR request. (v2 Module V1)
+ * lib/request-client.ts — PARSE request params (v2 Module V5 rewrite).
  *
- * Operator routes/pages (dashboard, inbox, campaign, scrub, skiptrace, reply, leads) act on one
- * client at a time. Until a client switcher ships (later module), this defaults to client 1
- * (Talan) and accepts a `?clientId=` override (used by tests / the eventual switcher). The admin
- * gate is unchanged and still required by every route — this only selects WHICH client's data.
+ * SECURITY: these helpers now ONLY parse the raw `?clientId=` / `?campaignId=` values — they do
+ * NOT decide which client a request may act on. That decision moved to lib/access.ts
+ * (resolveClientIdForUser), which takes the LOGGED-IN USER and the parsed request value and locks a
+ * client user to their own client_id. This is the chokepoint that closes the V1 access gate: a
+ * request param can no longer select a client on its own.
  *
- * The inbound webhook does NOT use this — it resolves the client by the Twilio To number
- * (getClientByInboundNumber), since there is no operator session on an inbound SMS.
+ * (The old clientIdFromRequest/resolveClient helpers — which defaulted straight to client 1 from a
+ * request param with no user check — were removed.)
  */
 
-import { getClientById, DEFAULT_CLIENT_ID, type Client } from "@/lib/clients";
-
-/** The selected client id for an operator request: `?clientId=` if valid, else client 1. */
-export function clientIdFromRequest(req: Request): number {
-  const raw = new URL(req.url).searchParams.get("clientId");
+function parsePositiveInt(raw: string | null | undefined): number | undefined {
   const n = Number(raw);
-  return Number.isInteger(n) && n > 0 ? n : DEFAULT_CLIENT_ID;
+  return Number.isInteger(n) && n > 0 ? n : undefined;
 }
 
-/** Load the selected client record (or null if it doesn't exist). */
-export async function resolveClient(req: Request): Promise<Client | null> {
-  return getClientById(clientIdFromRequest(req));
+/** The raw requested client id (or undefined). Pass to resolveClientIdForUser with the session user. */
+export function requestedClientId(req: Request): number | undefined {
+  return parsePositiveInt(new URL(req.url).searchParams.get("clientId"));
 }
 
-/** Same selection logic for server-component pages that only have searchParams. */
-export function clientIdFromSearchParams(searchParams: { clientId?: string }): number {
-  const n = Number(searchParams.clientId);
-  return Number.isInteger(n) && n > 0 ? n : DEFAULT_CLIENT_ID;
+/** Same for server-component pages that only have searchParams. */
+export function requestedClientIdFromSearchParams(searchParams: { clientId?: string }): number | undefined {
+  return parsePositiveInt(searchParams.clientId);
+}
+
+/**
+ * The requested campaign id for an operator request, or undefined if none/invalid. (v2 Module V2)
+ * The actual campaign is resolved per (resolved) client via resolveCampaignForClient, which
+ * validates ownership + falls back to the client's default campaign. This only parses the param.
+ */
+export function campaignIdFromRequest(req: Request): number | undefined {
+  return parsePositiveInt(new URL(req.url).searchParams.get("campaignId"));
+}
+
+/** Same for server-component pages that only have searchParams. */
+export function campaignIdFromSearchParams(searchParams: { campaignId?: string }): number | undefined {
+  return parsePositiveInt(searchParams.campaignId);
 }

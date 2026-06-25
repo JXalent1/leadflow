@@ -1,26 +1,26 @@
 // GET /api/inbox — READ-ONLY inbox data for client-side refresh. (Session 7, Module 7)
 //
-// AUTH: requires the admin cookie (isAuthed) — never expose contact/message data to an
-// unauthenticated request. This route only reads. The reply SEND and lead UPDATE go through
+// AUTH: operator session (requireOperator) — 401/403 otherwise; never expose contact/message data
+// to an unauthenticated request. This route only reads. The reply SEND and lead UPDATE go through
 // the dedicated /api/reply and /api/leads endpoints.
 //
 //   GET /api/inbox                 → { threads }     (the conversation list)
 //   GET /api/inbox?contactId=123   → { thread }      (full detail for one contact)
 
 import { NextResponse } from "next/server";
-import { isAuthed } from "@/app/actions";
-import { clientIdFromRequest } from "@/lib/request-client";
+import { requireOperator } from "@/lib/guard";
+import { resolveClientIdForUser } from "@/lib/access";
+import { requestedClientId } from "@/lib/request-client";
 import { getInboxThreads, getThread } from "@/lib/inbox-db";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(req: Request) {
   try {
-    if (!(await isAuthed())) {
-      return NextResponse.json({ error: "unauthorized" }, { status: 401 });
-    }
-
-    const clientId = clientIdFromRequest(req);
+    const g = await requireOperator();
+    if (!g.ok) return g.response;
+    const clientId = resolveClientIdForUser(g.user, requestedClientId(req));
+    if (clientId === null) return NextResponse.json({ error: "forbidden" }, { status: 403 });
     const { searchParams } = new URL(req.url);
     const contactIdRaw = searchParams.get("contactId");
 

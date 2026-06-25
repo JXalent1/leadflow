@@ -39,6 +39,7 @@ async function main() {
   } = await import("@/lib/db");
   const { getInboxThreads, isPhoneOptedOut } = await import("@/lib/inbox-db");
   const { getClientById, getClientByInboundNumber } = await import("@/lib/clients");
+  const { resolveCampaignForClient } = await import("@/lib/campaigns");
   const { renderMessage } = await import("@/lib/sms");
   const { processInbound } = await import("@/lib/inbound");
 
@@ -61,11 +62,19 @@ async function main() {
               60, 'Client2 opt-out confirmation.')
       ON CONFLICT (id) DO NOTHING
     `;
-    // A client-2 contact that is fully eligible (phone, scrubbed clean, not sent).
+    // Two client-2 campaigns: "A" holds the opted-out contact; "B" is a brand-new campaign used
+    // for the client-level-suppression-by-phone check below.
+    const c2CampA = (
+      (await sql`INSERT INTO campaigns (client_id, name) VALUES (${C2}, 'iso c2 campaign A') RETURNING id`)[0] as { id: number }
+    ).id;
+    const c2CampB = (
+      (await sql`INSERT INTO campaigns (client_id, name) VALUES (${C2}, 'iso c2 campaign B') RETURNING id`)[0] as { id: number }
+    ).id;
+    // A client-2 contact that is fully eligible (phone, scrubbed clean, not sent), in campaign A.
     const c2ContactRows = await sql`
-      INSERT INTO contacts (client_id, first_name, last_name, address, city, state, zip,
+      INSERT INTO contacts (client_id, campaign_id, first_name, last_name, address, city, state, zip,
                             phone, phone_type, skiptrace_status, scrub_status, send_status)
-      VALUES (${C2}, 'Casey', 'Two', '900 Other St', 'Tallahassee', 'FL', '32301',
+      VALUES (${C2}, ${c2CampA}, 'Casey', 'Two', '900 Other St', 'Tallahassee', 'FL', '32301',
               ${C2_PHONE}, 'mobile', 'matched', 'clean', 'not_sent')
       RETURNING id
     `;
@@ -84,6 +93,64 @@ async function main() {
     // The client-2 contact is suppressed (we opted it out), so it isn't eligible for client 2 either —
     // prove the scope instead: every client-2 eligible row is client 2's.
     check("getEligibleContacts(2) only returns client_id=2 rows", elig2.every((c) => c.client_id === 2));
+
+    // === 1b. CLIENT-LEVEL suppression by phone (v2 V2, LOAD-BEARING) ===
+    // A person who opted out under ANY of a client's campaigns must be excluded from EVERY
+    // campaign — even a brand-new contact row in a new campaign with the same number and its own
+    // suppressed=false flag. C2_PHONE opted out in campaign A; insert a FRESH, never-flagged,
+    // scrubbed-clean contact with that same phone into campaign B and prove it is NOT eligible.
+    const dupRows = await sql`
+      INSERT INTO contacts (client_id, campaign_id, first_name, last_name, address, city, state, zip,
+                            phone, phone_type, skiptrace_status, scrub_status, send_status, suppressed)
+      VALUES (${C2}, ${c2CampB}, 'Dupe', 'Phone', '111 New Campaign Rd', 'Tallahassee', 'FL', '32301',
+              ${C2_PHONE}, 'mobile', 'matched', 'clean', 'not_sent', false)
+      RETURNING id
+    `;
+    const dupContactId = (dupRows[0] as { id: number }).id;
+    // A control: a fresh contact in campaign B whose phone was NEVER opted out → must be eligible.
+    const FRESH_PHONE = "9995550000";
+    const freshRows = await sql`
+      INSERT INTO contacts (client_id, campaign_id, first_name, last_name, address, city, state, zip,
+                            phone, phone_type, skiptrace_status, scrub_status, send_status, suppressed)
+      VALUES (${C2}, ${c2CampB}, 'Fresh', 'Lead', '222 New Campaign Rd', 'Tallahassee', 'FL', '32301',
+              ${FRESH_PHONE}, 'mobile', 'matched', 'clean', 'not_sent', false)
+      RETURNING id
+    `;
+    const freshContactId = (freshRows[0] as { id: number }).id;
+
+    const campBEligible = await getEligibleContacts(C2, { campaignId: c2CampB });
+    check(
+      "a fresh contact in a NEW campaign with an opted-out phone is EXCLUDED (client-level suppression)",
+      !campBEligible.some((c) => c.id === dupContactId)
+    );
+    check(
+      "...and its suppressed flag is still false (proof the exclusion is by opt_outs, not the row flag)",
+      ((await sql`SELECT suppressed FROM contacts WHERE id = ${dupContactId}`)[0] as { suppressed: boolean }).suppressed === false
+    );
+    check(
+      "a fresh contact with a never-opted-out phone IS eligible in the new campaign (control)",
+      campBEligible.some((c) => c.id === freshContactId)
+    );
+    // And the dup is excluded from a client-WIDE eligibility too (not just campaign B).
+    check(
+      "the opted-out phone is excluded from client-wide eligibility as well",
+      !(await getEligibleContacts(C2)).some((c) => c.id === dupContactId)
+    );
+
+    // === 1c. resolveCampaignForClient never reaches another client's campaign (v2 V2 review) ===
+    // Asking for client 1 while passing a client-2 campaign id must FALL BACK to client 1's own
+    // default campaign (campaign 1 = pilot), never return the client-2 campaign.
+    const crossResolve = await resolveCampaignForClient(1, c2CampA);
+    check(
+      "resolveCampaignForClient(client 1, client-2 campaign id) falls back to client 1's campaign 1",
+      crossResolve?.id === 1 && crossResolve?.client_id === 1
+    );
+    // And resolving within client 2 for a valid client-2 campaign returns exactly that campaign.
+    const c2Resolve = await resolveCampaignForClient(C2, c2CampB);
+    check(
+      "resolveCampaignForClient(client 2, its own campaign) returns that campaign",
+      c2Resolve?.id === c2CampB && c2Resolve?.client_id === C2
+    );
 
     // === 2. Inbox never crosses clients ===
     const inbox1 = await getInboxThreads(1);
@@ -144,10 +211,13 @@ async function main() {
   } finally {
     // --- cleanup: restore client 1's template + remove ALL client-2 fixture data -------------
     await sql`UPDATE clients SET message_template = ${c1TemplateOrig} WHERE id = 1`;
+    await sql`DELETE FROM client_invoices WHERE client_id = ${C2}`;
     await sql`DELETE FROM leads WHERE client_id = ${C2}`;
     await sql`DELETE FROM opt_outs WHERE client_id = ${C2}`;
     await sql`DELETE FROM messages WHERE client_id = ${C2}`;
     await sql`DELETE FROM contacts WHERE client_id = ${C2}`;
+    await sql`DELETE FROM campaign_runs WHERE client_id = ${C2}`;
+    await sql`DELETE FROM campaigns WHERE client_id = ${C2}`;
     await sql`DELETE FROM clients WHERE id = ${C2}`;
   }
 

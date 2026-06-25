@@ -49,6 +49,48 @@ VALUES (1, 'Talan Window Cleaning', 'active', 250000, 50, '+18508213720',
         'You''re unsubscribed and will receive no more messages. Reply HELP for help.')
 ON CONFLICT (id) DO NOTHING;
 
+-- Advance the clients sequence past the manually-seeded id=1 so a future auto-INSERT (when client
+-- creation is wired in a later module) gets id>=2 instead of colliding on 1. Idempotent. (v2 V2
+-- review: mirrors the campaigns setval below -- avoids a latent PK collision foot-gun.)
+SELECT setval(pg_get_serial_sequence('clients', 'id'), GREATEST((SELECT MAX(id) FROM clients), 1));
+
+-- ===========================================================================
+-- v2 CAMPAIGNS (Module V2, 2026-06-24)
+-- ===========================================================================
+-- A client runs MANY campaigns over time. Each campaign owns its own contact list and its own
+-- trace -> scrub -> send lifecycle. A contact belongs to exactly one campaign (and thus one
+-- client). Suppression stays CLIENT-level by phone: opt_outs are keyed (client_id, phone), and
+-- the eligibility query excludes any phone the client has opted out, so opting out of one
+-- campaign excludes that phone from ALL of that client's campaigns, current and future.
+-- message_template is nullable: a campaign inherits the client's template when null.
+CREATE TABLE IF NOT EXISTS campaigns (
+  id               serial PRIMARY KEY,
+  client_id        int NOT NULL REFERENCES clients(id),
+  name             text NOT NULL,
+  status           text NOT NULL DEFAULT 'draft',   -- draft|ready|tracing|scrubbing|sending|done|paused
+  message_template text,                            -- nullable: inherits the client's template when null
+  created_at       timestamptz DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_campaigns_client ON campaigns(client_id);
+
+-- Migrate the pilot in as campaign #1 under client 1. Idempotent: explicit id=1, ON CONFLICT.
+INSERT INTO campaigns (id, client_id, name, status)
+VALUES (1, 1, 'Tallahassee pilot', 'sending')
+ON CONFLICT (id) DO NOTHING;
+
+-- Advance the serial sequence past the manually-inserted id=1 so the next auto-INSERT (the CSV
+-- uploader's createCampaign, which omits id) gets id>=2 instead of colliding on 1. setval(max)
+-- leaves nextval at max+1 and is idempotent (re-running just re-sets it to the current max).
+-- NOTE: no statement-separator char may appear in this comment block (apply-schema splits on it).
+SELECT setval(pg_get_serial_sequence('campaigns', 'id'), GREATEST((SELECT MAX(id) FROM campaigns), 1));
+
+-- Module N (no-scrub send mode, 2026-06-25): a per-campaign scrub_mode. 'vendor' (the default) runs
+-- the existing Tracerfy scrub unchanged. 'none' makes the scrub stage a PASSTHROUGH that marks the
+-- campaign's traced, with-phone, still-pending contacts scrub_status='clean' with NO vendor call or
+-- credit spend. Eligibility + opt-out suppression are UNCHANGED (an opted-out contact stays excluded
+-- even when marked clean). Idempotent: existing rows backfill to 'vendor' so the Talan pilot is unchanged.
+ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS scrub_mode text NOT NULL DEFAULT 'vendor';
+
 -- Contacts: the homeowner list. Phones are appended later (Session 2, Tracerfy).
 CREATE TABLE IF NOT EXISTS contacts (
   id               serial PRIMARY KEY,
@@ -158,11 +200,15 @@ CREATE TABLE IF NOT EXISTS scrub_jobs (
 -- Recovery query hits this: find paid-but-not-yet-ingested scrub jobs to re-read after a crash.
 CREATE INDEX IF NOT EXISTS idx_scrub_jobs_status ON scrub_jobs(status);
 
--- Campaign runs: one row per send batch.
+-- Campaign runs: one row per DRIVEN send. (v2 Module V3: a run now spans the whole
+-- client-side-driven send for a campaign, not one HTTP batch — the driver opens a run,
+-- sends batch after batch through the same per-batch eligibility + atomic-claim path,
+-- heartbeats it each batch, and finishes it when nothing eligible remains.)
 CREATE TABLE IF NOT EXISTS campaign_runs (
   id              serial PRIMARY KEY,
   started_at      timestamptz DEFAULT now(),
   finished_at     timestamptz,                           -- NULL while running, set on completion (Session 3 review)
+  last_batch_at   timestamptz,                           -- heartbeat: bumped each driven batch (v2 V3)
   total_eligible  int,
   sent_count      int DEFAULT 0,
   note            text
@@ -172,6 +218,12 @@ CREATE TABLE IF NOT EXISTS campaign_runs (
 -- concurrent-run guard tell an active run from a finished one, and distinguishes a
 -- completed run from one the function timed out mid-loop (finished_at stays NULL).
 ALTER TABLE campaign_runs ADD COLUMN IF NOT EXISTS finished_at timestamptz;
+
+-- v2 Module V3: last_batch_at is the run heartbeat. The active-run guard measures staleness
+-- from COALESCE(last_batch_at, started_at), so a multi-batch driven send that legitimately
+-- outlasts the old started_at window stays "active" (keeps blocking a second operator) as long
+-- as the driver keeps sending, while a crashed driver's run still goes stale and self-heals.
+ALTER TABLE campaign_runs ADD COLUMN IF NOT EXISTS last_batch_at timestamptz;
 
 -- Indexes the send/scrub paths rely on.
 CREATE INDEX IF NOT EXISTS idx_contacts_suppressed   ON contacts(suppressed);
@@ -232,3 +284,75 @@ DROP INDEX IF EXISTS idx_messages_twilio_sid_unique;
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_opt_outs_client_phone ON opt_outs(client_id, phone);
 DROP INDEX IF EXISTS idx_opt_outs_phone;
+
+-- ===========================================================================
+-- v2 campaign_id — scope contacts + campaign_runs to a campaign (Module V2, 2026-06-24)
+-- ===========================================================================
+-- Same backfill pattern as client_id: DEFAULT 1 backfills existing rows to campaign #1 (the
+-- migrated pilot — which is itself under client 1, so the existing client_id=1 rows stay
+-- consistent), then DROP the default so a forgotten campaign_id fails loudly. campaigns(id=1)
+-- is seeded above, so the FK validates. NOT NULL is enforced. trace_jobs / scrub_jobs are
+-- deliberately NOT campaign-scoped (they are pinned by the contact_ids they submitted, and a
+-- crash-recovery ingest must work regardless of which campaign is currently being run).
+ALTER TABLE contacts      ADD COLUMN IF NOT EXISTS campaign_id int NOT NULL DEFAULT 1 REFERENCES campaigns(id);
+ALTER TABLE contacts      ALTER COLUMN campaign_id DROP DEFAULT;
+CREATE INDEX IF NOT EXISTS idx_contacts_campaign ON contacts(campaign_id);
+
+ALTER TABLE campaign_runs ADD COLUMN IF NOT EXISTS campaign_id int NOT NULL DEFAULT 1 REFERENCES campaigns(id);
+ALTER TABLE campaign_runs ALTER COLUMN campaign_id DROP DEFAULT;
+CREATE INDEX IF NOT EXISTS idx_campaign_runs_campaign ON campaign_runs(campaign_id);
+
+-- ===========================================================================
+-- v2 USERS + real per-user login (Module V5, 2026-06-24) — closes the V1 access gate
+-- ===========================================================================
+-- Replaces the single shared ADMIN_PASSWORD with real accounts. A user is either an OPERATOR
+-- (role='operator', client_id NULL — may act on any client) or a CLIENT user (role='client',
+-- client_id set — HARD-LOCKED to that client, can never reach another client's data). Passwords
+-- are stored ONLY as a scrypt hash (see lib/auth.ts) with no plaintext column. The resolved
+-- client for every request now comes from the logged-in user's session, NOT a ?clientId= param.
+-- Users are seeded by scripts/seed-users.ts (npm run seed:users) with hashed, env-provided
+-- passwords — NOT in this SQL, so no credential is ever committed.
+CREATE TABLE IF NOT EXISTS users (
+  id            serial PRIMARY KEY,
+  email         text NOT NULL,
+  password_hash text NOT NULL,                       -- scrypt$N$r$p$saltB64$hashB64 (never plaintext)
+  role          text NOT NULL DEFAULT 'client',      -- 'operator' | 'client'
+  client_id     int REFERENCES clients(id),          -- NULL for operator, set for a client user
+  created_at    timestamptz DEFAULT now()
+);
+
+-- Case-insensitive unique email (also the ON CONFLICT target for the idempotent user upsert).
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_lower ON users(lower(email));
+
+-- ===========================================================================
+-- v2 LEAD-TARGET AUTO-PAUSE + BILLING TRACKING (Module V6, 2026-06-25)
+-- ===========================================================================
+-- Deliver-then-stop: each client has a lead TARGET per period. When the client hits its target for
+-- the current period the send path STOPS sending for them (no wasted texts/credits past the goal)
+-- and resumes automatically next period. This is a BUSINESS gate layered ON TOP of suppression /
+-- eligibility — it is enforced server-side in the send route and never weakens suppression.
+--
+-- lead_target is NULLABLE: null means "fall back to lead_guarantee" (the contractual number), so a
+-- client whose target equals its guarantee needs no extra config (Talan stays 50/month, unchanged).
+-- A client can be set to e.g. 15/week by setting lead_target=15, target_period='week'. lead_guarantee
+-- stays the cockpit contractual figure while lead_target drives the auto-pause.
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS lead_target   int;                            -- null = use lead_guarantee
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS target_period text NOT NULL DEFAULT 'month';  -- 'week' | 'month'
+
+-- Billing tracking (track-only, NO Stripe): one row per client per billing cycle. The operator marks
+-- a cycle invoiced or paid and collection happens outside the app. amount_cents snapshots the plan
+-- amount at the time the invoice is materialized. status: 'due' (default) | 'invoiced' | 'paid'.
+CREATE TABLE IF NOT EXISTS client_invoices (
+  id            serial PRIMARY KEY,
+  client_id     int NOT NULL REFERENCES clients(id),
+  period_start  timestamptz NOT NULL,                  -- billing cycle start (= currentCycle.start)
+  period_end    timestamptz NOT NULL,                  -- billing cycle end   (= next bill date)
+  amount_cents  int NOT NULL,
+  status        text NOT NULL DEFAULT 'due',           -- due | invoiced | paid
+  invoiced_at   timestamptz,
+  paid_at       timestamptz,
+  created_at    timestamptz DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_client_invoices_client ON client_invoices(client_id);
+-- One invoice per client per cycle (the ON CONFLICT target for the idempotent materialize).
+CREATE UNIQUE INDEX IF NOT EXISTS idx_client_invoices_period ON client_invoices(client_id, period_start);

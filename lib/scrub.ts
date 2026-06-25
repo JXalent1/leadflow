@@ -165,16 +165,21 @@ export async function ingestOutstandingScrubJobs(clientId: number): Promise<Scru
  */
 export async function scrubBatch(
   clientId: number,
-  opts: { limit?: number; traceQueueId?: number; phoneColumns?: string[] } = {}
+  opts: { campaignId?: number; limit?: number; traceQueueId?: number; phoneColumns?: string[] } = {}
 ): Promise<ScrubBatchResult> {
   // RESUME step: write back any paid-but-orphaned scrub job(s) before considering a new scrub.
+  // CLIENT-wide on purpose (same reasoning as traceBatch): jobs are pinned to their contact_ids,
+  // recovery is free + never crosses a client, and the new scrub below is scoped to opts.campaignId.
   const recovered = await ingestOutstandingScrubJobs(clientId);
   const recoveredClean = recovered.reduce((a, r) => a + r.clean, 0);
   const recoveredSuppressed = recovered.reduce((a, r) => a + r.suppressed, 0);
   const recoveredCount = recovered.reduce((a, r) => a + r.ingested, 0);
   const recoveredByReason = mergeReasons(recovered.map((r) => r.byReason));
 
-  const contacts = await getContactsForScrub(clientId, opts.limit);
+  const contacts = await getContactsForScrub(clientId, {
+    campaignId: opts.campaignId,
+    limit: opts.limit,
+  });
   if (contacts.length === 0) {
     return {
       scrubbed: recoveredCount,

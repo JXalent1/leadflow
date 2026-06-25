@@ -8,11 +8,10 @@
  * the fly from the pure classifier (no stored column, no side effect).
  */
 
-import {
-  getContactCounts,
-  getSendProgress,
-  hasActiveCampaignRun,
-} from "@/lib/db";
+import { getContactCounts, getSendProgress } from "@/lib/db";
+import { getActiveCampaignRun } from "@/lib/campaign-runs";
+import { getTargetStatus } from "@/lib/auto-pause";
+import type { TargetPeriod } from "@/lib/lead-target";
 import {
   getDashboardExtraCounts,
   getRecentLeads,
@@ -23,6 +22,7 @@ import {
   type OptOutRow,
 } from "@/lib/dashboard-db";
 import { clientWindow, type Client } from "@/lib/clients";
+import { listCampaigns, type Campaign, type CampaignSummary } from "@/lib/campaigns";
 import { isOptOut, classifyInterest } from "@/lib/classify";
 import { withinSendWindow, sendWindowLabel, sendRatePerHour } from "@/lib/twilio";
 
@@ -51,10 +51,27 @@ export interface DashboardCounts {
 }
 
 export interface DashboardData {
+  clientId: number;
+  clientName: string;
+  /** The campaign this snapshot is scoped to. */
+  campaignId: number;
+  campaignName: string;
+  /** All of this client's campaigns, for the selector. */
+  campaigns: CampaignSummary[];
   counts: DashboardCounts;
   sendWindow: { within: boolean; label: string };
   activeRun: boolean;
+  /** The in-flight run's id, so the client-side driver can RESUME/continue its OWN run. */
+  activeRunId: number | null;
   ratePerHour: number;
+  /** V6 deliver-then-stop status for this client's current target period. */
+  autoPause: {
+    target: number;
+    period: TargetPeriod;
+    leadsThisPeriod: number;
+    met: boolean;
+    nextPeriod: string;
+  };
   recentLeads: LeadRow[];
   recentInbound: InboundFeedRow[];
   recentOptOuts: OptOutRow[];
@@ -68,19 +85,26 @@ function dispositionFor(body: string): InboundDisposition {
   return classifyInterest(body);
 }
 
-/** Gather everything the dashboard renders for ONE client. READ-ONLY. */
-export async function getDashboardData(client: Client): Promise<DashboardData> {
+/**
+ * Gather everything the dashboard renders for ONE client, scoped to ONE campaign. READ-ONLY.
+ * Counts + leads/reply feeds are campaign-scoped; the opt-out list stays CLIENT-level because
+ * suppression is client-level (an opt-out applies across all of the client's campaigns).
+ */
+export async function getDashboardData(client: Client, campaign: Campaign): Promise<DashboardData> {
   const clientId = client.id;
+  const campaignId = campaign.id;
   const window = clientWindow(client);
-  const [contactCounts, progress, extra, recentLeads, inbound, recentOptOuts, activeRun] =
+  const [contactCounts, progress, extra, recentLeads, inbound, recentOptOuts, activeRun, campaigns, targetStatus] =
     await Promise.all([
-      getContactCounts(clientId),
-      getSendProgress(clientId),
-      getDashboardExtraCounts(clientId),
-      getRecentLeads(clientId, 50),
-      getRecentInbound(clientId, 50),
+      getContactCounts(clientId, campaignId),
+      getSendProgress(clientId, campaignId),
+      getDashboardExtraCounts(clientId, campaignId),
+      getRecentLeads(clientId, campaignId, 50),
+      getRecentInbound(clientId, campaignId, 50),
       getRecentOptOuts(clientId, 25),
-      hasActiveCampaignRun(clientId),
+      getActiveCampaignRun(clientId, campaignId),
+      listCampaigns(clientId),
+      getTargetStatus(client),
     ]);
 
   const recentInbound: InboundFeedRow[] = inbound.map((m) => ({
@@ -89,6 +113,11 @@ export async function getDashboardData(client: Client): Promise<DashboardData> {
   }));
 
   return {
+    clientId,
+    clientName: client.name,
+    campaignId,
+    campaignName: campaign.name,
+    campaigns,
     counts: {
       total: contactCounts.total,
       withPhone: contactCounts.withPhone,
@@ -103,8 +132,16 @@ export async function getDashboardData(client: Client): Promise<DashboardData> {
       leads: extra.leads,
     },
     sendWindow: { within: withinSendWindow(new Date(), window), label: sendWindowLabel(window) },
-    activeRun,
+    activeRun: activeRun !== null,
+    activeRunId: activeRun ? activeRun.id : null,
     ratePerHour: sendRatePerHour(client.send_rate_per_hour),
+    autoPause: {
+      target: targetStatus.target,
+      period: targetStatus.period,
+      leadsThisPeriod: targetStatus.leadsThisPeriod,
+      met: targetStatus.met,
+      nextPeriod: targetStatus.nextPeriod,
+    },
     recentLeads,
     recentInbound,
     recentOptOuts,

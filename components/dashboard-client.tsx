@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { DashboardData } from "@/lib/dashboard";
 import CountCards from "./count-cards";
 import SendProgress from "./send-progress";
+import PipelineRunner from "./pipeline-runner";
 import CampaignControls from "./campaign-controls";
 import LeadsTable from "./leads-table";
 import ReplyFeed from "./reply-feed";
@@ -16,18 +17,28 @@ import { formatTime } from "./dashboard-utils";
  * and after any control action. No write logic here — controls hit the existing
  * endpoints; this just refreshes the view.
  */
-export default function DashboardClient({ initial }: { initial: DashboardData }) {
+export default function DashboardClient({
+  initial,
+  clientId,
+  campaignId,
+}: {
+  initial: DashboardData;
+  clientId: number;
+  campaignId: number;
+}) {
   const [data, setData] = useState<DashboardData>(initial);
   const [refreshing, setRefreshing] = useState(false);
   const [staleError, setStaleError] = useState(false);
   const inFlight = useRef(false);
+  // Every read/action is scoped to the selected client + campaign.
+  const scope = `clientId=${clientId}&campaignId=${campaignId}`;
 
   const refresh = useCallback(async () => {
     if (inFlight.current) return;
     inFlight.current = true;
     setRefreshing(true);
     try {
-      const res = await fetch("/api/dashboard", { cache: "no-store" });
+      const res = await fetch(`/api/dashboard?${scope}`, { cache: "no-store" });
       if (!res.ok) {
         setStaleError(true);
         return;
@@ -41,7 +52,7 @@ export default function DashboardClient({ initial }: { initial: DashboardData })
       inFlight.current = false;
       setRefreshing(false);
     }
-  }, []);
+  }, [scope]);
 
   // Poll: 7s while a run is active (live progress), else 20s.
   useEffect(() => {
@@ -72,11 +83,33 @@ export default function DashboardClient({ initial }: { initial: DashboardData })
         activeRun={data.activeRun}
       />
 
-      <CampaignControls
-        eligible={data.counts.eligible}
-        withinWindow={data.sendWindow.within}
+      <div className="flex flex-wrap items-center gap-2 text-sm">
+        <span className="text-neutral-500">
+          Leads this {data.autoPause.period}:{" "}
+          <span className="font-medium tabular-nums text-neutral-900">
+            {data.autoPause.leadsThisPeriod}/{data.autoPause.target}
+          </span>{" "}
+          target
+        </span>
+        {data.autoPause.met ? (
+          <span className="rounded-full bg-purple-100 px-3 py-1 text-xs font-medium text-purple-800">
+            ⏸ Auto-paused — target met, sending resumes {data.autoPause.nextPeriod}
+          </span>
+        ) : null}
+      </div>
+
+      <PipelineRunner
+        scope={scope}
+        ratePerHour={data.ratePerHour}
         windowLabel={data.sendWindow.label}
-        activeRun={data.activeRun}
+        withinWindow={data.sendWindow.within}
+        activeRunId={data.activeRunId}
+        onChanged={refresh}
+      />
+
+      <CampaignControls
+        scope={scope}
+        windowLabel={data.sendWindow.label}
         onChanged={refresh}
       />
 

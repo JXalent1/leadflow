@@ -1,7 +1,7 @@
 // /api/reply — the manual 1:1 reply send path. (Session 7, Module 7)
 //
-// AUTH: requires the admin cookie (isAuthed) — this endpoint sends real SMS and spends
-// money, so it must never be world-callable. 401 if unauthenticated.
+// AUTH: operator session (requireOperator) — this endpoint sends real SMS and spends money, so it
+// must never be world-callable. 401 if unauthenticated, 403 if a client user.
 //
 // COMPLIANCE (load-bearing): this is a NEW outbound-send path, so the same "never text a
 // suppressed/opted-out number" guarantee that governs the campaign blast applies here.
@@ -16,10 +16,11 @@
 // one segment (a human is typing). Suppression is the only hard gate.
 
 import { NextResponse } from "next/server";
-import { isAuthed } from "@/app/actions";
+import { requireOperator } from "@/lib/guard";
+import { resolveClientIdForUser } from "@/lib/access";
+import { requestedClientId } from "@/lib/request-client";
 import { recordMessage } from "@/lib/db";
-import { resolveClient } from "@/lib/request-client";
-import { clientSender } from "@/lib/clients";
+import { getClientById, clientSender } from "@/lib/clients";
 import { getContactById, isPhoneOptedOut } from "@/lib/inbox-db";
 import { sendOne } from "@/lib/twilio";
 import { replyRefusalReason } from "@/lib/reply";
@@ -28,18 +29,18 @@ export const maxDuration = 60;
 
 export async function POST(req: Request) {
   try {
-    // AUTH GATE — never allow an unauthenticated send.
-    if (!(await isAuthed())) {
-      return NextResponse.json({ error: "unauthorized" }, { status: 401 });
-    }
+    // AUTH GATE — operator only; never allow an unauthenticated or client-role send.
+    const g = await requireOperator();
+    if (!g.ok) return g.response;
 
     // Resolve the operator's selected client — the reply sends from this client's number and is
     // gated only by this client's suppression/opt-outs (never another client's records).
-    const client = await resolveClient(req);
+    const clientId = resolveClientIdForUser(g.user, requestedClientId(req));
+    if (clientId === null) return NextResponse.json({ error: "forbidden" }, { status: 403 });
+    const client = await getClientById(clientId);
     if (!client) {
       return NextResponse.json({ error: "client_not_found" }, { status: 404 });
     }
-    const clientId = client.id;
 
     const body = await req.json().catch(() => ({}));
     const contactId = Number(body?.contactId);

@@ -46,13 +46,15 @@ async function main() {
   const { DEFAULT_CLIENT_ID } = await import("@/lib/clients");
 
   const clientId = arg("client") ? Math.max(1, Number(arg("client"))) : DEFAULT_CLIENT_ID;
+  // Optional campaign scope; omit to trace ALL the client's pending across every campaign.
+  const campaignId = arg("campaign") ? Math.max(1, Number(arg("campaign"))) : undefined;
   const batch = Math.max(1, Number(arg("batch") ?? 50));
   const max = arg("max") ? Math.max(1, Number(arg("max"))) : Infinity;
   const delay = Math.max(0, Number(arg("delay") ?? 0));
   const traceType: TraceType = flag("advanced") ? "advanced" : "normal";
 
   console.log(
-    `[trace] starting — client=${clientId} batch=${batch} max=${max === Infinity ? "ALL" : max} type=${traceType} delay=${delay}ms`
+    `[trace] starting — client=${clientId} campaign=${campaignId ?? "ALL"} batch=${batch} max=${max === Infinity ? "ALL" : max} type=${traceType} delay=${delay}ms`
   );
 
   let traced = 0;
@@ -64,7 +66,7 @@ async function main() {
     const limit = Math.min(batch, max - traced);
     let res;
     try {
-      res = await traceBatch(clientId, { limit, traceType });
+      res = await traceBatch(clientId, { campaignId, limit, traceType });
     } catch (err) {
       if (err instanceof InsufficientCreditsError) {
         console.error(

@@ -86,11 +86,12 @@ export async function markScrubJobIngested(
  * 'pending'). Mirrors getContactsForScrub's predicate exactly — used by the credit pre-flight
  * to report "need N, have M" before submitting anything. (A COUNT, not a row fetch.)
  */
-export async function getPendingScrubCount(clientId: number): Promise<number> {
+export async function getPendingScrubCount(clientId: number, campaignId?: number): Promise<number> {
   const rows = await sql`
     SELECT COUNT(*)::int AS n
     FROM contacts
     WHERE client_id = ${clientId}
+      AND (${campaignId ?? null}::int IS NULL OR campaign_id = ${campaignId ?? null}::int)
       AND skiptrace_status = 'matched'
       AND phone IS NOT NULL
       AND suppressed = false

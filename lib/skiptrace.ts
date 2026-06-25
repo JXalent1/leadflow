@@ -153,17 +153,23 @@ export async function ingestOutstandingJobs(clientId: number): Promise<IngestRes
  */
 export async function traceBatch(
   clientId: number,
-  opts: { limit?: number; traceType?: TraceType } = {}
+  opts: { campaignId?: number; limit?: number; traceType?: TraceType } = {}
 ): Promise<TraceBatchResult> {
   const traceType: TraceType = opts.traceType === "advanced" ? "advanced" : "normal";
 
-  // RESUME step: write back any paid-but-orphaned job(s) before considering a new trace.
+  // RESUME step: write back any paid-but-orphaned job(s) before considering a new trace. This is
+  // CLIENT-wide (not campaign-scoped) on purpose — orphaned jobs are pinned to the exact
+  // contact_ids they submitted, recovering them is free + never crosses a client boundary, and
+  // failing to recover would strand paid results. New tracing below is scoped to opts.campaignId.
   const recovered = await ingestOutstandingJobs(clientId);
   const recoveredMatched = recovered.reduce((a, r) => a + r.matched, 0);
   const recoveredNoMatch = recovered.reduce((a, r) => a + r.noMatch, 0);
   const recoveredCount = recovered.reduce((a, r) => a + r.ingested, 0);
 
-  const pending = await getContactsForSkiptrace(clientId, opts.limit);
+  const pending = await getContactsForSkiptrace(clientId, {
+    campaignId: opts.campaignId,
+    limit: opts.limit,
+  });
   if (pending.length === 0) {
     return {
       traced: recoveredCount,

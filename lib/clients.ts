@@ -14,8 +14,9 @@
 
 import { sql } from "@/lib/db";
 
-/** The only client today. Operator routes/pages default here until a switcher ships (later module). */
-export const DEFAULT_CLIENT_ID = 1;
+// Re-exported from a db-free module so pure modules (lib/access.ts) can import the default without
+// pulling in the Neon driver. Operator routes/pages default here when no client is selected.
+export { DEFAULT_CLIENT_ID } from "@/lib/constants";
 
 export interface Client {
   id: number;
@@ -23,6 +24,10 @@ export interface Client {
   status: string; // 'active' | 'paused'
   plan_amount_cents: number;
   lead_guarantee: number;
+  /** Per-period lead target driving the V6 auto-pause; null = fall back to lead_guarantee. */
+  lead_target: number | null;
+  /** 'week' | 'month' — the period the lead target is measured over. */
+  target_period: string;
   billing_day: number | null;
   from_number: string | null;
   messaging_service_sid: string | null;
@@ -46,6 +51,8 @@ function toClient(r: Record<string, unknown>): Client {
     status: String(r.status),
     plan_amount_cents: Number(r.plan_amount_cents),
     lead_guarantee: Number(r.lead_guarantee),
+    lead_target: r.lead_target === null || r.lead_target === undefined ? null : Number(r.lead_target),
+    target_period: r.target_period ? String(r.target_period) : "month",
     billing_day: r.billing_day === null || r.billing_day === undefined ? null : Number(r.billing_day),
     from_number: (r.from_number as string | null) ?? null,
     messaging_service_sid: (r.messaging_service_sid as string | null) ?? null,
@@ -60,6 +67,48 @@ function toClient(r: Record<string, unknown>): Client {
     branding: r.branding ?? {},
     created_at: String(r.created_at),
   };
+}
+
+/**
+ * Update a client's live send rate (sends/hour). (v2 Module V3 — live send-rate control.)
+ * Clamped to [1, 1000]; the value is persisted so the send loop, which reads
+ * client.send_rate_per_hour fresh on every batch, picks the change up on the next batch with NO
+ * redeploy. Returns the clamped value actually stored. Scoped to the one client_id.
+ */
+export async function setClientSendRate(clientId: number, rate: number): Promise<number> {
+  const clamped = Math.max(1, Math.min(1000, Math.floor(rate)));
+  await sql`UPDATE clients SET send_rate_per_hour = ${clamped} WHERE id = ${clientId}`;
+  return clamped;
+}
+
+/**
+ * Update a client's lead target + period for the V6 auto-pause. (v2 Module V6.) `target` null →
+ * fall back to lead_guarantee (no per-period cap beyond the contractual guarantee); a positive int
+ * caps deliver-then-stop at that many leads per `period`. The send route reads these fresh each
+ * batch, so a change resumes/halts sending on the NEXT batch with no redeploy. Scoped to one client.
+ */
+export async function setClientLeadTarget(
+  clientId: number,
+  target: number | null,
+  period: "week" | "month"
+): Promise<void> {
+  const clamped = target == null ? null : Math.max(0, Math.floor(target));
+  await sql`
+    UPDATE clients
+    SET lead_target = ${clamped}, target_period = ${period}
+    WHERE id = ${clientId}
+  `;
+}
+
+/**
+ * All clients, oldest id first. (v2 Module V4 — the operator cockpit.) This is an OPERATOR-only
+ * read: the operator owns every client, so the cockpit may aggregate summary metrics across all of
+ * them. It returns the client records only — no contact-level data crosses a client boundary here,
+ * and nothing client-FACING uses it.
+ */
+export async function listClients(): Promise<Client[]> {
+  const rows = await sql`SELECT * FROM clients ORDER BY id`;
+  return (rows as Record<string, unknown>[]).map(toClient);
 }
 
 /** Load one client by id, or null if no such client. */

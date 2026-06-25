@@ -15,7 +15,12 @@
     "smoke:tracerfy": "tsx scripts/smoke-tracerfy.ts",
     "smoke:twilio": "tsx scripts/smoke-twilio.ts",
     "smoke:webhook": "tsx scripts/smoke-webhook.ts",
+    "seed:users": "tsx scripts/seed-users.ts",
     "test:isolation": "tsx scripts/isolation-fixture.ts",
+    "test:cockpit": "tsx scripts/cockpit-fixture.ts",
+    "test:access": "tsx scripts/access-control-fixture.ts",
+    "test:auto-pause": "tsx scripts/auto-pause-fixture.ts",
+    "test:passthrough": "tsx scripts/test-passthrough.ts",
     "test": "tsx --test lib/*.test.ts"
   },
   "dependencies": {

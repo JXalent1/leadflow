@@ -1,25 +1,28 @@
 import { redirect } from "next/navigation";
-import { isAuthed, logout } from "@/app/actions";
+import { logout } from "@/app/actions";
+import { getSessionUser } from "@/lib/session";
+import { isOperator, resolveClientIdForUser } from "@/lib/access";
 import { getInboxThreads } from "@/lib/inbox-db";
 import { getClientById, clientWindow } from "@/lib/clients";
-import { clientIdFromSearchParams } from "@/lib/request-client";
+import { requestedClientIdFromSearchParams } from "@/lib/request-client";
 import { withinSendWindow, sendWindowLabel } from "@/lib/twilio";
 import InboxClient from "@/components/inbox/inbox-client";
 
 // Always render fresh — threads change as replies come in / go out.
 export const dynamic = "force-dynamic";
 
+// Operator-only (V5): the inbox sends replies, so it is never exposed to a client user.
 export default async function InboxPage({
   searchParams,
 }: {
   searchParams: { contact?: string; clientId?: string };
 }) {
-  // Reuse the Session 1 admin gate. Unauthed → back to the / login.
-  if (!(await isAuthed())) {
-    redirect("/");
-  }
+  const user = await getSessionUser();
+  if (!user) redirect("/login");
+  if (!isOperator(user)) redirect("/client");
 
-  const clientId = clientIdFromSearchParams(searchParams);
+  const clientId = resolveClientIdForUser(user, requestedClientIdFromSearchParams(searchParams));
+  if (clientId === null) redirect("/");
 
   const initialContactId = (() => {
     const n = Number(searchParams.contact);

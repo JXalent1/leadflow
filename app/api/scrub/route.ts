@@ -11,18 +11,22 @@
 // Returns: { scrubbed, suppressed, byReason }
 
 import { NextResponse } from "next/server";
-import { isAuthed } from "@/app/actions";
-import { clientIdFromRequest } from "@/lib/request-client";
+import { requireOperator } from "@/lib/guard";
+import { resolveClientIdForUser } from "@/lib/access";
+import { requestedClientId, campaignIdFromRequest } from "@/lib/request-client";
+import { resolveCampaignForClient } from "@/lib/campaigns";
 import { scrubBatch, InsufficientCreditsError } from "@/lib/scrub";
+import { passthroughScrubBatch } from "@/lib/scrub-passthrough";
 
 export const maxDuration = 300;
 
 export async function POST(req: Request) {
   try {
-    // AUTH GATE — scrubbing spends Tracerfy credits and mutates suppression flags.
-    if (!(await isAuthed())) {
-      return NextResponse.json({ error: "unauthorized" }, { status: 401 });
-    }
+    // AUTH GATE — operator only; scrubbing spends Tracerfy credits and mutates suppression flags.
+    const g = await requireOperator();
+    if (!g.ok) return g.response;
+    const clientId = resolveClientIdForUser(g.user, requestedClientId(req));
+    if (clientId === null) return NextResponse.json({ error: "forbidden" }, { status: 403 });
 
     const body = await req.json().catch(() => ({}));
     const limit = typeof body.limit === "number" ? body.limit : undefined;
@@ -31,8 +35,28 @@ export async function POST(req: Request) {
       ? body.phoneColumns
       : undefined;
 
-    const result = await scrubBatch(clientIdFromRequest(req), { limit, traceQueueId, phoneColumns });
-    return NextResponse.json(result);
+    // Scope the scrub to the selected campaign (default = the client's pilot campaign).
+    const campaign = await resolveCampaignForClient(clientId, campaignIdFromRequest(req));
+    if (!campaign) {
+      return NextResponse.json({ error: "no_campaign" }, { status: 404 });
+    }
+
+    // Module N: a 'none' campaign skips the vendor scrub entirely — passthrough-mark the campaign's
+    // traced contacts clean with NO Tracerfy call/credit spend. Same response shape the pipeline
+    // driver already loops on (scrubbed/clean/suppressed), so components/pipeline-runner.tsx is
+    // unchanged. 'vendor' (the default) runs the existing Tracerfy scrubBatch byte-for-byte.
+    if (campaign.scrub_mode === "none") {
+      const result = await passthroughScrubBatch(clientId, { campaignId: campaign.id, limit });
+      return NextResponse.json({ ...result, scrubMode: "none", campaignId: campaign.id });
+    }
+
+    const result = await scrubBatch(clientId, {
+      campaignId: campaign.id,
+      limit,
+      traceQueueId,
+      phoneColumns,
+    });
+    return NextResponse.json({ ...result, campaignId: campaign.id });
   } catch (err) {
     // Credit pre-flight refusal — nothing was submitted/spent. 402 so the caller can top up.
     if (err instanceof InsufficientCreditsError) {

@@ -1,0 +1,104 @@
+"use client";
+
+import { useState } from "react";
+import { useRouter } from "next/navigation";
+
+/**
+ * components/cockpit-billing.tsx — the per-client billing control on the operator cockpit. (V6.)
+ *
+ * Track-only: shows the current cycle's invoice status + next bill date and lets the operator mark
+ * it invoiced / paid. NO payment processing — it POSTs to /api/billing which only records status;
+ * collection happens outside the app. After a successful mark it refreshes the server-rendered
+ * cockpit so the new status shows. The links above are <a> navigations, so this control stops click
+ * propagation to avoid triggering the card's drill-through.
+ */
+
+type Status = "due" | "invoiced" | "paid";
+
+const STATUS_PILL: Record<Status, { text: string; cls: string }> = {
+  due: { text: "Due", cls: "bg-amber-100 text-amber-800" },
+  invoiced: { text: "Invoiced", cls: "bg-sky-100 text-sky-800" },
+  paid: { text: "Paid ✓", cls: "bg-green-100 text-green-800" },
+};
+
+function fmtDate(iso: string): string {
+  return iso.slice(0, 10);
+}
+
+function fmtAmount(cents: number): string {
+  return `$${(cents / 100).toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+}
+
+export default function CockpitBilling({
+  clientId,
+  status,
+  amountCents,
+  nextBillDate,
+}: {
+  clientId: number;
+  status: Status;
+  amountCents: number;
+  nextBillDate: string;
+}) {
+  const router = useRouter();
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const pill = STATUS_PILL[status];
+
+  async function mark(action: "invoiced" | "paid", e: React.MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    setBusy(true);
+    setErr(null);
+    try {
+      const res = await fetch(`/api/billing?clientId=${clientId}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action }),
+      });
+      if (!res.ok) {
+        const data = (await res.json().catch(() => ({}))) as { error?: string };
+        setErr(data.error ?? `HTTP ${res.status}`);
+        return;
+      }
+      router.refresh();
+    } catch {
+      setErr("network error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div
+      className="mt-4 flex flex-wrap items-center gap-2 border-t border-neutral-100 pt-3 text-xs"
+      onClick={(e) => e.stopPropagation()}
+    >
+      <span className="text-neutral-500">
+        {fmtAmount(amountCents)}/mo · next bill {fmtDate(nextBillDate)}
+      </span>
+      <span className={`rounded-full px-2 py-0.5 font-medium ${pill.cls}`}>{pill.text}</span>
+      <div className="ml-auto flex items-center gap-2">
+        {status !== "paid" ? (
+          <button
+            onClick={(e) => mark("invoiced", e)}
+            disabled={busy}
+            className="rounded border border-neutral-300 px-2 py-1 hover:bg-neutral-50 disabled:opacity-40"
+          >
+            Mark invoiced
+          </button>
+        ) : null}
+        {status !== "paid" ? (
+          <button
+            onClick={(e) => mark("paid", e)}
+            disabled={busy}
+            className="rounded border border-neutral-300 px-2 py-1 hover:bg-neutral-50 disabled:opacity-40"
+          >
+            Mark paid
+          </button>
+        ) : null}
+        {err ? <span className="text-red-600">{err}</span> : null}
+      </div>
+    </div>
+  );
+}

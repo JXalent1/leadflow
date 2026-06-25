@@ -34,6 +34,10 @@ async function main() {
   const fresh = process.argv.includes("--fresh");
   const clientArg = process.argv.find((a) => a.startsWith("--client="));
   const clientId = clientArg ? Math.max(1, Number(clientArg.split("=")[1])) : 1;
+  // v2: contacts now carry a campaign_id (NOT NULL). The Talan pilot list belongs to campaign 1.
+  // (The product path for new lists is the in-app CSV uploader, which creates a fresh campaign.)
+  const campaignArg = process.argv.find((a) => a.startsWith("--campaign="));
+  const campaignId = campaignArg ? Math.max(1, Number(campaignArg.split("=")[1])) : 1;
   const csvPath = join(process.cwd(), "data", "tallahassee_test_500.csv");
   const raw = readFileSync(csvPath, "utf8");
   const rows = parse(raw, { columns: true, skip_empty_lines: true, trim: true }) as CsvRow[];
@@ -77,8 +81,8 @@ async function main() {
     }
 
     await sql`
-      INSERT INTO contacts (client_id, first_name, last_name, address, city, state, zip)
-      VALUES (${clientId}, ${norm(row.FirstName) || null}, ${norm(row.LastName) || null},
+      INSERT INTO contacts (client_id, campaign_id, first_name, last_name, address, city, state, zip)
+      VALUES (${clientId}, ${campaignId}, ${norm(row.FirstName) || null}, ${norm(row.LastName) || null},
               ${address}, ${norm(row.City) || null},
               ${norm(row.State) || null}, ${zip || null})
     `;

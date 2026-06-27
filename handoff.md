@@ -2,8 +2,42 @@
 
 _For the next session — read this first._
 
-_Last updated: 2026-06-27 (Claude Code — 2nd-client onboarding + per-client opt-out keyword + Add/Edit
-client UI. The 2026-06-22 "type 2 to opt out" concern is now CLOSED — "2" actually suppresses.)_
+_Last updated: 2026-06-27 (Claude Code — multi-recipient lead forwarding: forward_phone can hold several
+comma-separated numbers so a lead pings more than one person. Single-number behavior byte-unchanged.)_
+
+## ▶ Multi-recipient lead forwarding (2026-06-27) — DONE
+A client's `forward_phone` may now hold SEVERAL numbers so each lead pings more than one person (e.g.
+the operator + the client owner). **Additive — suppression / eligibility / classification / the send
+path / the inbound signature gate are all UNTOUCHED.**
+- **New pure module** `lib/forward-phones.ts` — `parseForwardPhones(raw)`: split on comma / semicolon /
+  whitespace / newline, trim, drop blanks, **dedupe by last-10 digits** (first form kept). `isProbablyPhone`
+  for non-blocking UI validation. Dependency-free so the `"use client"` form can import it too.
+  **GOTCHA:** whitespace IS a separator, so numbers must NOT contain internal spaces (a number like
+  "+1 850 …" would be split). The form helper text says "comma-separate"; E.164 has no spaces.
+- **`lib/forward.ts`** — `forwardLead` parses the recipients, pings EACH via `sendOne` (sequential,
+  **never throws** — unchanged failure policy), marks the lead `forwarded` if **≥1** ping succeeds, and
+  `console.error`s each per-recipient failure with its code (logs last-4 only). Total failure → false,
+  lead stays on the dashboard. `buildLeadPing` text UNCHANGED. **A single number is byte-identical** to
+  before. Talan/client-1 `TALAN_FORWARD_PHONE` fallback kept (scoped to client 1, may itself be a list).
+  `forwardLead` gained an OPTIONAL injected `deps` (`{ send, markForwarded }`, default the real
+  `sendOne`/`markLeadForwarded`) purely so the fixture can MOCK Twilio — the webhook still calls
+  `forwardLead(args, cfg)` (2 args), unchanged. Note: `DEFAULT_CLIENT_ID` now imported from
+  `@/lib/constants` (pure) so forward.ts stays importable without dragging lib/clients.
+- **UI** `components/client-form.tsx` — the forward field is a textarea ("comma-separate multiple
+  numbers", shows the recipient count) with non-blocking validation flagging clearly-invalid entries.
+  No backend change: `updateClientConfig` / `POST/PATCH /api/clients` already write `forward_phone` as
+  free text, and the column already holds it (NO schema change).
+- **Green:** tsc/build, `npm test` = **250** (+11 parse/validation), new **`npm run test:forward`** =
+  16/16 live-DB with a MOCKED `sendOne` (two recipients → two pings + `forwarded=true`; one-fail-one-
+  success → still true; all-fail → false + lead stays; single → one ping), isolation/access/cockpit/
+  auto-pause/passthrough/optout all pass, DB pristine.
+
+### Operator note
+Set a client's **forward phone(s)** to several **comma-separated** numbers (in the New/Edit client form)
+to ping more than one person per lead — e.g. the operator + the client owner. One number behaves exactly
+as before. Numbers must not contain internal spaces (use `+14075551234`, not `+1 407 555 1234`).
+
+## ▶ 2nd-client onboarding + per-client opt-out keyword (2026-06-27) — DONE
 
 ## ▶ 2nd-client onboarding + per-client opt-out keyword (2026-06-27) — DONE
 Onboard + configure a client (e.g. Jeremy, Orlando powerwashing) end to end from the operator cockpit,

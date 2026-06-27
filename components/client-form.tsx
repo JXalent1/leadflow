@@ -20,6 +20,7 @@
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { renderMessage, segmentInfo, optOutInstructionFor } from "@/lib/sms";
+import { parseForwardPhones, isProbablyPhone } from "@/lib/forward-phones";
 import Button from "./ui/button";
 import { Field, Input, Select } from "./ui/field";
 
@@ -140,6 +141,13 @@ function ClientFormModal({
     return { body, seg: segmentInfo(body), optLine };
   }, [v.message_template, v.biz_name, v.optout_keyword, v.optout_instruction]);
 
+  // Forward recipients: parse the free-text field + flag clearly-invalid entries (non-blocking).
+  const forward = useMemo(() => {
+    const list = parseForwardPhones(v.forward_phone);
+    const invalid = list.filter((p) => !isProbablyPhone(p));
+    return { count: list.length, invalid };
+  }, [v.forward_phone]);
+
   async function submit() {
     setErr(null);
     if (!v.name.trim()) {
@@ -256,12 +264,29 @@ function ClientFormModal({
                 placeholder="+1..."
               />
             </Field>
-            <Field label="Forward phone (lead pings)" htmlFor="cf-fwd" help="The client's cell — where hot leads are texted.">
-              <Input
+            <Field
+              label="Forward phone(s) (lead pings)"
+              htmlFor="cf-fwd"
+              help={
+                forward.invalid.length > 0
+                  ? undefined
+                  : `Where hot leads are texted. Comma-separate multiple numbers to ping more than one person${
+                      forward.count > 1 ? ` (${forward.count} recipients)` : ""
+                    }.`
+              }
+              error={
+                forward.invalid.length > 0
+                  ? `Check these entries (saved anyway): ${forward.invalid.join(", ")}`
+                  : undefined
+              }
+            >
+              <textarea
                 id="cf-fwd"
                 value={v.forward_phone ?? ""}
                 onChange={(e) => set("forward_phone", e.target.value || null)}
-                placeholder="+1..."
+                rows={2}
+                placeholder="+14075551234, +14075556789"
+                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:border-indigo-500"
               />
             </Field>
           </div>

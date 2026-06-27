@@ -22,6 +22,7 @@
     "test:auto-pause": "tsx scripts/auto-pause-fixture.ts",
     "test:passthrough": "tsx scripts/test-passthrough.ts",
     "test:optout": "tsx scripts/optout-keyword-fixture.ts",
+    "test:forward": "tsx scripts/forward-fixture.ts",
     "test": "tsx --test lib/*.test.ts"
   },
   "dependencies": {

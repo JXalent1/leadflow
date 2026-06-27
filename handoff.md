@@ -2,6 +2,19 @@
 
 _For the next session — read this first._
 
+## ⚠️ INCIDENT + fixture safety fix (2026-06-27)
+**What happened:** the live-DB fixtures (`isolation`/`access`/`cockpit`/`auto-pause`/`passthrough`)
+hardcoded `C2 = 2` as a disposable test tenant and ran `DELETE ... WHERE client_id = 2` UNCONDITIONALLY
+in cleanup. After a REAL client #2 ("Jermey's Powerwashing") was onboarded, running those fixtures
+**deleted his 2,900 contacts + campaigns/messages/leads/opt-outs** (his 15 paid `trace_jobs` survived
+via FK). Recovery was via **Neon point-in-time restore** to ~2026-06-27 16:45 UTC.
+**Fix applied (committed):** all 5 fixtures now use a high throwaway id `C2 = 900002` and call
+`assertDisposableClientId(sql, C2, markerName)` from `scripts/fixture-safety.ts` **before** their
+try/finally — it REFUSES to run if that id is occupied by a client the fixture didn't create (real
+client) or if the id is < 100000. Cleanups now also drop `trace_jobs`/`scrub_jobs`. **Lesson: never run
+a destructive live-DB fixture without checking it can't touch a real tenant.**
+
+
 _Last updated: 2026-06-27 (Claude Code — multi-recipient lead forwarding: forward_phone can hold several
 comma-separated numbers so a lead pings more than one person. Single-number behavior byte-unchanged.)_
 

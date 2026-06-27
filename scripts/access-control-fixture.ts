@@ -22,7 +22,9 @@ config({ path: ".env.local" });
 config();
 process.env.SESSION_SECRET = process.env.SESSION_SECRET || "fixture-session-secret-at-least-16-chars";
 
-const C2 = 2;
+// High throwaway id (NOT a low/real client id — see scripts/fixture-safety.ts; 2026-06-27 incident).
+const C2 = 900002;
+const C2_NAME = "ACCESS TEST CLIENT";
 const C2_FROM = "+15005550006";
 let failures = 0;
 function check(name: string, cond: boolean) {
@@ -55,11 +57,15 @@ async function main() {
   // Pre-clean any leftover fixture users from a previous aborted run.
   await sql`DELETE FROM users WHERE email = ANY(${ALL_EMAILS})`;
 
+  // SAFETY: refuse to run if C2 is a real client (cleanup deletes ALL client_id=C2 data). Before try.
+  const { assertDisposableClientId } = await import("./fixture-safety");
+  await assertDisposableClientId(sql, C2, C2_NAME);
+
   try {
     // --- client 2 + a contact + a this-cycle lead ---
     await sql`
       INSERT INTO clients (id, name, from_number, send_rate_per_hour)
-      VALUES (${C2}, 'ACCESS TEST CLIENT', ${C2_FROM}, 60)
+      VALUES (${C2}, ${C2_NAME}, ${C2_FROM}, 60)
       ON CONFLICT (id) DO NOTHING
     `;
     const c2Camp = (
@@ -87,7 +93,7 @@ async function main() {
     const opDb = await getUserById(op.id);
     const c2Db = await getUserById(c2u.id);
     check("operator user loads with role=operator, client_id NULL", opDb?.role === "operator" && opDb?.client_id === null);
-    check("client-2 user loads with role=client, client_id=2", c2Db?.role === "client" && c2Db?.client_id === 2);
+    check("client-2 user loads with role=client, client_id=C2", c2Db?.role === "client" && c2Db?.client_id === C2);
 
     // === 1. THE CLOSED GATE: a client user can never resolve to another client ===
     for (const requested of [undefined, 1, 2, 3, 999] as (number | undefined)[]) {
@@ -149,6 +155,9 @@ async function main() {
     await sql`DELETE FROM client_invoices WHERE client_id = ${C2}`;
     await sql`DELETE FROM leads WHERE client_id = ${C2}`;
     await sql`DELETE FROM contacts WHERE client_id = ${C2}`;
+    await sql`DELETE FROM trace_jobs WHERE client_id = ${C2}`;
+    await sql`DELETE FROM scrub_jobs WHERE client_id = ${C2}`;
+    await sql`DELETE FROM campaign_runs WHERE client_id = ${C2}`;
     await sql`DELETE FROM campaigns WHERE client_id = ${C2}`;
     await sql`DELETE FROM clients WHERE id = ${C2}`;
   }

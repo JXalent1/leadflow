@@ -16,7 +16,9 @@ import { config } from "dotenv";
 config({ path: ".env.local" });
 config();
 
-const C2 = 2;
+// High throwaway id (NOT a low/real client id — see scripts/fixture-safety.ts; 2026-06-27 incident).
+const C2 = 900002;
+const C2_NAME = "ISOLATION TEST CLIENT";
 const C2_FROM = "+15005550006"; // client 2's campaign number (not client 1's +18508213720)
 const C2_PHONE = "9995551234"; // a client-2 contact phone (last-10)
 let failures = 0;
@@ -52,12 +54,17 @@ async function main() {
   const c1OptOutsBefore = (await sql`SELECT count(*)::int n FROM opt_outs WHERE client_id=1`)[0] as { n: number };
   const c1MsgsBefore = (await sql`SELECT count(*)::int n FROM messages WHERE client_id=1`)[0] as { n: number };
 
+  // SAFETY: refuse to run if C2 is a real client (its cleanup deletes ALL client_id=C2 data).
+  // Must run BEFORE the try/finally so a guard failure can never reach the cleanup deletes.
+  const { assertDisposableClientId } = await import("./fixture-safety");
+  await assertDisposableClientId(sql, C2, C2_NAME);
+
   try {
     // --- create client 2 + its data ---------------------------------------------------------
     await sql`
       INSERT INTO clients (id, name, from_number, message_template, forward_phone,
                            send_rate_per_hour, optout_confirmation)
-      VALUES (${C2}, 'ISOLATION TEST CLIENT', ${C2_FROM},
+      VALUES (${C2}, ${C2_NAME}, ${C2_FROM},
               'Yo [NAME], different copy entirely. Reply STOP to opt out.', ${C2_FROM},
               60, 'Client2 opt-out confirmation.')
       ON CONFLICT (id) DO NOTHING
@@ -87,12 +94,12 @@ async function main() {
 
     // === 1. Eligibility never crosses clients ===
     const elig1 = await getEligibleContacts(1);
-    const elig2 = await getEligibleContacts(2);
+    const elig2 = await getEligibleContacts(C2);
     check("getEligibleContacts(1) excludes the client-2 contact", !elig1.some((c) => c.id === c2ContactId));
     check("getEligibleContacts(1) only returns client_id=1 rows", elig1.every((c) => c.client_id === 1));
     // The client-2 contact is suppressed (we opted it out), so it isn't eligible for client 2 either —
     // prove the scope instead: every client-2 eligible row is client 2's.
-    check("getEligibleContacts(2) only returns client_id=2 rows", elig2.every((c) => c.client_id === 2));
+    check("getEligibleContacts(C2) only returns client-2 rows", elig2.every((c) => c.client_id === C2));
 
     // === 1b. CLIENT-LEVEL suppression by phone (v2 V2, LOAD-BEARING) ===
     // A person who opted out under ANY of a client's campaigns must be excluded from EVERY
@@ -154,7 +161,7 @@ async function main() {
 
     // === 2. Inbox never crosses clients ===
     const inbox1 = await getInboxThreads(1);
-    const inbox2 = await getInboxThreads(2);
+    const inbox2 = await getInboxThreads(C2);
     check("getInboxThreads(1) excludes the client-2 contact", !inbox1.some((t) => t.id === c2ContactId));
     check("getInboxThreads(2) includes ONLY the client-2 contact", inbox2.length === 1 && inbox2[0].id === c2ContactId);
 
@@ -169,7 +176,7 @@ async function main() {
     // === 5. Webhook routes strictly by To → owning client ===
     const byC2 = await getClientByInboundNumber(C2_FROM);
     const byC1 = await getClientByInboundNumber("+18508213720");
-    check("getClientByInboundNumber(client2 number) → client 2", byC2?.id === 2);
+    check("getClientByInboundNumber(client2 number) → client 2", byC2?.id === C2);
     check("getClientByInboundNumber(client1 number) → client 1", byC1?.id === 1);
     check("getClientByInboundNumber(unknown number) → null (rejected)", (await getClientByInboundNumber("+19998887777")) === null);
 
@@ -192,7 +199,7 @@ async function main() {
       deps as any,
       { bizName: "x", emitConfirmation: false }
     );
-    const orphanInC2 = (await sql`SELECT count(*)::int n FROM opt_outs WHERE client_id=2 AND phone=${ORPHAN}`)[0] as { n: number };
+    const orphanInC2 = (await sql`SELECT count(*)::int n FROM opt_outs WHERE client_id=${C2} AND phone=${ORPHAN}`)[0] as { n: number };
     const orphanInC1 = (await sql`SELECT count(*)::int n FROM opt_outs WHERE client_id=1 AND phone=${ORPHAN}`)[0] as { n: number };
     check("an inbound STOP to client 2's number records the opt-out under client 2", orphanInC2.n === 1);
     check("...and creates NO opt-out under client 1", orphanInC1.n === 0);
@@ -200,12 +207,12 @@ async function main() {
     // === 7. Config from the client record: template change affects client 1 ONLY ===
     const sampleContact = { firstName: "James", zip: "32301", address: "123 Main St" };
     const c1RenderOrig = renderMessage((await getClientById(1))!.message_template ?? "", sampleContact);
-    const c2Render = renderMessage((await getClientById(2))!.message_template ?? "", sampleContact);
+    const c2Render = renderMessage((await getClientById(C2))!.message_template ?? "", sampleContact);
     check("client 1 and client 2 render DIFFERENT copy from their own templates", c1RenderOrig !== c2Render);
     // Change client 1's template in the DB, reload, re-render — output must change for client 1...
     await sql`UPDATE clients SET message_template = 'CHANGED [NAME] copy. Reply STOP to opt out.' WHERE id = 1`;
     const c1RenderAfter = renderMessage((await getClientById(1))!.message_template ?? "", sampleContact);
-    const c2RenderAfter = renderMessage((await getClientById(2))!.message_template ?? "", sampleContact);
+    const c2RenderAfter = renderMessage((await getClientById(C2))!.message_template ?? "", sampleContact);
     check("changing client 1's message_template changes renderMessage for client 1", c1RenderAfter !== c1RenderOrig && c1RenderAfter.startsWith("CHANGED James copy."));
     check("...and does NOT change client 2's render", c2RenderAfter === c2Render);
   } finally {
@@ -217,6 +224,8 @@ async function main() {
     await sql`DELETE FROM messages WHERE client_id = ${C2}`;
     await sql`DELETE FROM contacts WHERE client_id = ${C2}`;
     await sql`DELETE FROM campaign_runs WHERE client_id = ${C2}`;
+    await sql`DELETE FROM trace_jobs WHERE client_id = ${C2}`;
+    await sql`DELETE FROM scrub_jobs WHERE client_id = ${C2}`;
     await sql`DELETE FROM campaigns WHERE client_id = ${C2}`;
     await sql`DELETE FROM clients WHERE id = ${C2}`;
   }

@@ -20,7 +20,9 @@ import { config } from "dotenv";
 config({ path: ".env.local" });
 config();
 
-const C2 = 2;
+// High throwaway id (NOT a low/real client id — see scripts/fixture-safety.ts; 2026-06-27 incident).
+const C2 = 900002;
+const C2_NAME = "PASSTHROUGH TEST CLIENT";
 const C2_FROM = "+15005550006";
 let failures = 0;
 function check(name: string, cond: boolean) {
@@ -49,11 +51,15 @@ async function main() {
       (SELECT scrub_mode FROM campaigns WHERE id=1) AS pilot_mode`
   )[0] as { contacts: number; clean: number; optouts: number; pilot_mode: string };
 
+  // SAFETY: refuse to run if C2 is a real client (cleanup deletes ALL client_id=C2 data). Before try.
+  const { assertDisposableClientId } = await import("./fixture-safety");
+  await assertDisposableClientId(sql, C2, C2_NAME);
+
   try {
     // --- throwaway client #2 -------------------------------------------------------------------
     await sql`
       INSERT INTO clients (id, name, status, plan_amount_cents, lead_guarantee, from_number, send_rate_per_hour)
-      VALUES (${C2}, 'PASSTHROUGH TEST CLIENT', 'active', 250000, 50, ${C2_FROM}, 60)
+      VALUES (${C2}, ${C2_NAME}, 'active', 250000, 50, ${C2_FROM}, 60)
       ON CONFLICT (id) DO NOTHING
     `;
 
@@ -151,6 +157,8 @@ async function main() {
     await sql`DELETE FROM opt_outs WHERE client_id=${C2}`;
     await sql`DELETE FROM contacts WHERE client_id=${C2}`;
     await sql`DELETE FROM scrub_jobs WHERE client_id=${C2}`;
+    await sql`DELETE FROM trace_jobs WHERE client_id=${C2}`;
+    await sql`DELETE FROM campaign_runs WHERE client_id=${C2}`;
     await sql`DELETE FROM client_invoices WHERE client_id=${C2}`;
     await sql`DELETE FROM campaigns WHERE client_id=${C2}`;
     await sql`DELETE FROM clients WHERE id=${C2}`;

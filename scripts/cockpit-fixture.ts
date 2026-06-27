@@ -17,7 +17,9 @@ import { config } from "dotenv";
 config({ path: ".env.local" });
 config();
 
-const C2 = 2;
+// High throwaway id (NOT a low/real client id — see scripts/fixture-safety.ts; 2026-06-27 incident).
+const C2 = 900002;
+const C2_NAME = "COCKPIT TEST CLIENT";
 const C2_FROM = "+15005550006"; // client 2's campaign number (not client 1's)
 let failures = 0;
 function check(name: string, cond: boolean) {
@@ -39,12 +41,16 @@ async function main() {
   // Snapshot client 1's this-cycle cockpit numbers so we can prove the fixture didn't touch it.
   const beforeC1 = (await getCockpitData(NOW)).rows.find((r) => r.clientId === 1);
 
+  // SAFETY: refuse to run if C2 is a real client (cleanup deletes ALL client_id=C2 data). Before try.
+  const { assertDisposableClientId } = await import("./fixture-safety");
+  await assertDisposableClientId(sql, C2, C2_NAME);
+
   try {
     // --- create client 2 with a known guarantee + calendar-month cycle ---
     await sql`
       INSERT INTO clients (id, name, status, lead_guarantee, billing_day, from_number,
                            send_rate_per_hour)
-      VALUES (${C2}, 'COCKPIT TEST CLIENT', 'active', 50, NULL, ${C2_FROM}, 60)
+      VALUES (${C2}, ${C2_NAME}, 'active', 50, NULL, ${C2_FROM}, 60)
       ON CONFLICT (id) DO NOTHING
     `;
 
@@ -98,6 +104,10 @@ async function main() {
     await sql`DELETE FROM leads WHERE client_id = ${C2}`;
     await sql`DELETE FROM messages WHERE client_id = ${C2}`;
     await sql`DELETE FROM opt_outs WHERE client_id = ${C2}`;
+    await sql`DELETE FROM trace_jobs WHERE client_id = ${C2}`;
+    await sql`DELETE FROM scrub_jobs WHERE client_id = ${C2}`;
+    await sql`DELETE FROM campaign_runs WHERE client_id = ${C2}`;
+    await sql`DELETE FROM campaigns WHERE client_id = ${C2}`;
     await sql`DELETE FROM clients WHERE id = ${C2}`;
   }
 

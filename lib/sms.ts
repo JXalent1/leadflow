@@ -82,8 +82,37 @@ export function isNonHumanName(name?: string | null): boolean {
 // renderMessage
 // ---------------------------------------------------------------------------
 
-// The required opt-out suffix that MUST appear at the end of every message.
+// The default opt-out suffix that MUST appear at the end of every message when a client has not
+// configured its own. Talan (client 1) keeps this verbatim. Per-client clients can advertise a
+// different visible instruction (e.g. Reply "2" to opt out) via optOutInstructionFor — but STOP
+// always keeps working at the classifier + carrier level regardless of the visible copy.
 const OPT_OUT_PHRASE = "Reply STOP to opt out.";
+
+/** Escape a literal string for use inside a RegExp. */
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Derive a client's visible opt-out instruction line from its config. Pure (no DB) so the operator
+ * UI preview can call it client-side too.
+ *  - an explicit `instruction` wins verbatim (operator typed the exact line);
+ *  - else a configured `keyword` yields `Reply "<keyword>" to opt out`;
+ *  - else the default `Reply STOP to opt out` (Talan / any STOP-only client).
+ * NOTE (operator choice, documented): advertising a non-STOP keyword does NOT disable STOP — carriers
+ * honor STOP at the carrier level no matter the visible copy, and 10DLC traffic that omits standard
+ * STOP language can see more carrier filtering. STOP stays authoritative in the classifier (isOptOut)
+ * regardless of what this line says.
+ */
+export function optOutInstructionFor(
+  keyword?: string | null,
+  instruction?: string | null
+): string {
+  if (instruction && instruction.trim()) return instruction.trim();
+  const kw = keyword?.trim();
+  if (kw) return `Reply "${kw}" to opt out`;
+  return "Reply STOP to opt out";
+}
 
 /**
  * The approved Talan (client 1) message template — kept here as the TS-side source of truth for
@@ -129,10 +158,18 @@ function titleCase(value?: string | null): string {
  *               e.g. " at ") is dropped. This reproduces Talan's single-segment auto-fallback:
  *               the address clause stays when it fits and is dropped when it would overflow.
  *
- * Hard requirement: every returned string MUST carry a "Reply STOP to opt out" line. Templates
- * are expected to include it; the safety guard below appends OPT_OUT_PHRASE if one is ever missing.
+ * Hard requirement: every returned string MUST carry an opt-out line. By default that line is
+ * "Reply STOP to opt out" (OPT_OUT_PHRASE); a per-client client passes its configured instruction
+ * (e.g. `Reply "2" to opt out`) as `optOutInstruction`. The safety guard below checks for THAT
+ * client's line at the end and appends it only if missing — so a "2"-opt-out client never gets a
+ * second/contradictory STOP line, and Talan (default instruction) stays byte-identical to v1.
  */
-export function renderMessage(template: string, contact: Contact, bizName = ""): string {
+export function renderMessage(
+  template: string,
+  contact: Contact,
+  bizName = "",
+  optOutInstruction: string = OPT_OUT_PHRASE
+): string {
   const useName =
     contact.firstName && !isNonHumanName(contact.firstName)
       ? titleCase(contact.firstName)
@@ -167,10 +204,14 @@ export function renderMessage(template: string, contact: Contact, bizName = ""):
   // punctuation, so output stays clean regardless of where a clause was removed.
   message = message.replace(/ {2,}/g, " ").replace(/ +([.,!?])/g, "$1").trim();
 
-  // Safety guard: every message must carry the opt-out line. Trailing period optional so
-  // Talan's verbatim (period-less) "Reply STOP to opt out" passes unchanged.
-  if (!/Reply STOP to opt out\.?$/.test(message)) {
-    message = `${message.trimEnd()} ${OPT_OUT_PHRASE}`;
+  // Safety guard: every message must carry THIS client's opt-out line, and never a second/contradictory
+  // one. We match the configured instruction at the end (trailing period optional, so Talan's verbatim
+  // period-less "Reply STOP to opt out" passes unchanged), and append the instruction only when missing.
+  const line = optOutInstruction.trim() || OPT_OUT_PHRASE;
+  const lineBase = line.replace(/\.\s*$/, ""); // strip a trailing period for the end-of-message check
+  const endRe = new RegExp(`${escapeRegExp(lineBase)}\\.?$`);
+  if (!endRe.test(message)) {
+    message = `${message.trimEnd()} ${line}`;
   }
 
   return message;

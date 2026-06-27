@@ -91,6 +91,20 @@ SELECT setval(pg_get_serial_sequence('campaigns', 'id'), GREATEST((SELECT MAX(id
 -- even when marked clean). Idempotent: existing rows backfill to 'vendor' so the Talan pilot is unchanged.
 ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS scrub_mode text NOT NULL DEFAULT 'vendor';
 
+-- ===========================================================================
+-- v2 PER-CLIENT OPT-OUT KEYWORD (2nd-client onboarding, 2026-06-27)
+-- ===========================================================================
+-- A client may advertise (and HONOR) an additional opt-out keyword on top of STOP, e.g. Reply 2 to
+-- opt out. optout_keyword is the ADDITIONAL trigger (exact-match only, normalized) and NULL means
+-- STOP-only behavior (today's behavior, unchanged). optout_instruction is the exact visible line
+-- rendered into the message, and NULL derives it from the keyword or the default Reply STOP to opt
+-- out. STOP-family keywords keep working unconditionally regardless of these (carriers honor STOP at
+-- the carrier level no matter the visible copy, and the classifier keeps STOP authoritative and
+-- always-on). Idempotent. Talan (client 1) keeps both NULL so client 1 stays byte-unchanged.
+-- NOTE: no statement-separator character may appear in this comment block (apply-schema splits on it).
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS optout_keyword     text;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS optout_instruction text;
+
 -- Contacts: the homeowner list. Phones are appended later (Session 2, Tracerfy).
 CREATE TABLE IF NOT EXISTS contacts (
   id               serial PRIMARY KEY,

@@ -47,7 +47,14 @@ import {
 } from "@/lib/campaign-runs";
 import { requestedClientId, campaignIdFromRequest } from "@/lib/request-client";
 import { resolveCampaignForClient } from "@/lib/campaigns";
-import { getClientById, clientSender, clientWindow, clientBizName, type Client } from "@/lib/clients";
+import {
+  getClientById,
+  clientSender,
+  clientWindow,
+  clientBizName,
+  clientOptOutInstruction,
+  type Client,
+} from "@/lib/clients";
 import { getTargetStatus } from "@/lib/auto-pause";
 import { renderMessage, withinSingleSegment, type Variant } from "@/lib/sms";
 import {
@@ -334,6 +341,7 @@ async function runSend(
   const clientId = client.id;
   const biz = clientBizName(client);
   const template = client.message_template ?? "";
+  const optOutLine = clientOptOutInstruction(client);
   const sender = clientSender(client);
   const window = clientWindow(client);
   const r: RunResult = {
@@ -363,7 +371,8 @@ async function runSend(
     const body = renderMessage(
       template,
       { firstName: c.first_name, zip: c.zip, address: c.address },
-      biz
+      biz,
+      optOutLine
     );
 
     // Never send a 2-segment message. Drain the contact (claim -> 'failed') so it

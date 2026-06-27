@@ -17,6 +17,7 @@ import {
   isNonHumanName,
   segmentInfo,
   withinSingleSegment,
+  optOutInstructionFor,
   TALAN_MESSAGE_TEMPLATE,
 } from "./sms";
 
@@ -185,6 +186,52 @@ test("renderMessage: a DIFFERENT template produces DIFFERENT output (template-dr
 test("renderMessage: appends the opt-out line if a template omits it (hard guardrail)", () => {
   const msg = renderMessage("Hi [NAME], quick note.", { firstName: "James", zip: null, address: "x" }, "Acme");
   assert.ok(/Reply STOP to opt out\.?$/.test(msg), `guardrail must append opt-out: "${msg}"`);
+});
+
+// ---------------------------------------------------------------------------
+// optOutInstructionFor + per-client opt-out line (configured keyword like "2")
+// ---------------------------------------------------------------------------
+
+test("optOutInstructionFor: keyword '2' → Reply \"2\" to opt out", () => {
+  assert.equal(optOutInstructionFor("2", null), 'Reply "2" to opt out');
+});
+test("optOutInstructionFor: null keyword → default Reply STOP to opt out", () => {
+  assert.equal(optOutInstructionFor(null, null), "Reply STOP to opt out");
+});
+test("optOutInstructionFor: an explicit instruction wins verbatim", () => {
+  assert.equal(optOutInstructionFor("2", "Txt 2 2 stop"), "Txt 2 2 stop");
+});
+
+const POWERWASH =
+  'Hey [NAME], this is the crew working near [ADDRESS] — want a free quote on pressure washing? Reply "2" to opt out';
+
+test('renderMessage (keyword "2" client): keeps Reply "2" to opt out, never appends a STOP line', () => {
+  const line = optOutInstructionFor("2", null);
+  const msg = renderMessage(
+    POWERWASH,
+    { firstName: "Chris", zip: "32801", address: "1424 EDGEWATER DR" },
+    "",
+    line
+  );
+  assert.ok(msg.endsWith('Reply "2" to opt out'), `got: "${msg}"`);
+  // No contradictory / double opt-out line.
+  assert.ok(!msg.includes("Reply STOP to opt out"), `must not contain a STOP line: "${msg}"`);
+  assert.equal(msg.match(/to opt out/g)?.length, 1, `exactly one opt-out line: "${msg}"`);
+});
+
+test('renderMessage (keyword "2" client): appends Reply "2" to opt out when the template omits it', () => {
+  const line = optOutInstructionFor("2", null);
+  const msg = renderMessage("Hi [NAME], quick powerwash note.", { firstName: "Chris", zip: null, address: "x" }, "", line);
+  assert.ok(msg.endsWith('Reply "2" to opt out'), `must append the per-client line: "${msg}"`);
+  assert.ok(!msg.includes("Reply STOP to opt out"), `must not append a STOP line: "${msg}"`);
+});
+
+test("renderMessage (Talan): passing the derived STOP-only instruction is BYTE-IDENTICAL to the default", () => {
+  const c = { firstName: "James", zip: "32301", address: "7445 BUCK LAKE RD" };
+  const withDefault = renderMessage(TALAN_MESSAGE_TEMPLATE, c, BIZ);
+  const withDerived = renderMessage(TALAN_MESSAGE_TEMPLATE, c, BIZ, optOutInstructionFor(null, null));
+  assert.equal(withDerived, withDefault, "client-1 render must not change when threading the derived opt-out line");
+  assert.ok(withDefault.endsWith("Reply STOP to opt out"));
 });
 
 // ---------------------------------------------------------------------------

@@ -177,6 +177,7 @@ export async function POST(req: Request) {
         bizName: clientBizName(client),
         emitConfirmation: emitConfirmation(),
         optOutConfirmation: client.optout_confirmation ?? undefined,
+        optOutKeyword: client.optout_keyword,
       },
     );
 

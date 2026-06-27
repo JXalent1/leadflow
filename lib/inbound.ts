@@ -14,7 +14,7 @@
  * Classification + opt-out detection are imported from lib/classify.ts — never re-implemented.
  */
 
-import { isOptOut, classifyInterest } from "./classify";
+import { isOptOut, classifyInterest, isConfiguredOptOut } from "./classify";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -97,6 +97,13 @@ export interface InboundOptions {
    * keeps existing tests (which don't supply it) producing the same text as before.
    */
   optOutConfirmation?: string;
+  /**
+   * The owning client's ADDITIONAL opt-out keyword (e.g. '2'), if configured. When set, an inbound
+   * whose WHOLE body exactly matches it (isConfiguredOptOut) opts out with the SAME unconditional
+   * precedence as STOP. Null/undefined (Talan) = STOP-only. STOP (isOptOut) is ALWAYS honored
+   * regardless of this value — the configured keyword is purely additive, never a replacement.
+   */
+  optOutKeyword?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -147,7 +154,11 @@ export async function processInbound(
   // Match the sender (read-only; safe before the dedupe gate).
   const contact = await deps.findContactByPhone(msg.fromPhone);
   const contactId = contact?.id ?? null;
-  const optOut = isOptOut(msg.body); // pure; compute before the gate so recovery can use it
+  // STOP (isOptOut) is ALWAYS authoritative. The client's configured keyword (exact whole-body
+  // match only) is an ADDITIVE trigger with identical precedence. Computed before the gate so the
+  // duplicate-retry recovery path can re-suppress too. Pure; never throws.
+  const optOut =
+    isOptOut(msg.body) || isConfiguredOptOut(msg.body, opts.optOutKeyword);
 
   // Idempotency gate: the inbound log doubles as the dedupe key. If this MessageSid
   // was already logged (Twilio retries webhooks), the insert no-ops and we stop

@@ -87,6 +87,45 @@ export function isOptOut(body: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// isConfiguredOptOut — per-client ADDITIONAL opt-out keyword (exact-match only)
+// ---------------------------------------------------------------------------
+//
+// A client may advertise an extra opt-out trigger on top of STOP, e.g. Reply "2" to opt out. Unlike
+// isOptOut (the CTIA STOP family, which matches a keyword as a token ANYWHERE in the message and is
+// always authoritative), the configured keyword is matched EXACTLY against the whole normalized
+// body — so for keyword "2" ONLY a message whose entire body is "2" (or "2." / quoted "2" / " 2 ")
+// opts out, NEVER a "2" that appears inside other text ("2 services", "call me at 2pm", "$200?").
+//
+// This is deliberately strict: a non-STOP keyword like a bare digit is far too common inside normal
+// replies to safely treat as opt-out anywhere, so we require the keyword to BE the whole message.
+// isOptOut stays the fail-safe over-matcher; this is an additive exact trigger.
+
+/**
+ * Normalize a body/keyword for exact configured-keyword comparison: trim, lowercase, then strip any
+ * surrounding quotes and punctuation/whitespace (so `"2"`, `2.`, ` 2 ` all reduce to `2`). Interior
+ * characters are left intact, so `2 services` stays multi-token and never reduces to `2`.
+ */
+function normalizeConfiguredKeyword(s: string): string {
+  return s
+    .trim()
+    .toLowerCase()
+    .replace(/^[\s"'“”‘’.,!?;:]+/, "")
+    .replace(/[\s"'“”‘’.,!?;:]+$/, "");
+}
+
+/**
+ * Returns true iff the whole message body EXACTLY matches the client's configured opt-out keyword
+ * (after normalization). A null/blank keyword (the default) always returns false — STOP-only.
+ * Pure; never throws. STOP-family handling stays in isOptOut and is unaffected by this.
+ */
+export function isConfiguredOptOut(body: string, keyword: string | null | undefined): boolean {
+  if (!body || !keyword || !keyword.trim()) return false;
+  const k = normalizeConfiguredKeyword(keyword);
+  if (!k) return false; // keyword was only punctuation/quotes — nothing to match
+  return normalizeConfiguredKeyword(body) === k;
+}
+
+// ---------------------------------------------------------------------------
 // classifyInterest
 // ---------------------------------------------------------------------------
 //

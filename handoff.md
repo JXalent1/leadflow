@@ -2,8 +2,53 @@
 
 _For the next session — read this first._
 
-_Last updated: 2026-06-25 (Claude Code — send-rate cap raised 1000→20000/hr (+ batch cap 50→250),
-deployed. V7 phase 1 launch-UI + no-scrub toggle already shipped. Prod login FIXED; ✅ GO.)_
+_Last updated: 2026-06-27 (Claude Code — 2nd-client onboarding + per-client opt-out keyword + Add/Edit
+client UI. The 2026-06-22 "type 2 to opt out" concern is now CLOSED — "2" actually suppresses.)_
+
+## ▶ 2nd-client onboarding + per-client opt-out keyword (2026-06-27) — DONE
+Onboard + configure a client (e.g. Jeremy, Orlando powerwashing) end to end from the operator cockpit,
+with his own number, his own copy, and a `Reply "2" to opt out` instruction the system **honors**.
+- **Schema:** nullable `clients.optout_keyword` (+ `optout_instruction`). NULL = STOP-only (Talan
+  unchanged). Applied live (67 stmts). **Gotcha hit + fixed:** my first schema comment had a `;` in it
+  ("visible copy; the classifier") — apply-schema splits on `;` even inside comments → reworded.
+- **Compliance core (do NOT weaken):** `lib/classify.ts isConfiguredOptOut(body, keyword)` is pure +
+  EXACT whole-normalized-body match only (trim/lowercase/strip surrounding quotes+punct). `isOptOut`
+  (STOP family) is UNCHANGED, always-on, authoritative — the keyword is ADDITIVE. `lib/inbound.ts`:
+  `optedOut = isOptOut(body) || (opts.optOutKeyword && isConfiguredOptOut(body, opts.optOutKeyword))`,
+  checked BEFORE classification, STOP's unconditional precedence. The webhook passes
+  `optOutKeyword: client.optout_keyword`.
+- **Render:** `lib/sms.ts renderMessage(template, contact, bizName, optOutInstruction?)` — the safety
+  guard now checks for/append's THAT client's line (`optOutInstructionFor(keyword, instruction)`), so a
+  "2" client never gets a contradictory second STOP line. **Talan byte-identical** (default param keeps
+  the period-form append; Talan's template includes the line so append never fires). The send path
+  (`app/api/campaign/route.ts`) threads `clientOptOutInstruction(client)`.
+- **lib/clients.ts:** `createClient(input)` (sane defaults + `setval` before insert so an auto-INSERT
+  can't collide with a manually-seeded id) + `updateClientConfig(clientId, fields)` (per-field scoped
+  UPDATEs, only provided fields). `clientOptOutInstruction(client)` derived helper.
+- **API:** `POST /api/clients` (operator-only create + optional client-login user via `upsertUser`) +
+  `PATCH /api/clients` (full-config edit, resolved through `resolveClientIdForUser`). The existing
+  `PATCH /api/client` (live rate / lead target) is untouched.
+- **UI:** `components/client-form.tsx` — `ClientFormLauncher` (`+ New client` in the cockpit summary
+  strip; per-card `Edit` with `stopPropagation` since the card is a link) opens a modal with a LIVE
+  preview (real `renderMessage`+`segmentInfo`+per-client opt-out line) + opt-out-keyword field + (on
+  create) login email/password. `app/page.tsx` now also `listClients()` and passes them to
+  `CockpitView` for prefill.
+- **Green:** tsc/build, `npm test` = **239** (+31), isolation 28/28, access/cockpit/auto-pause/
+  passthrough, new **`npm run test:optout`** = 16/16 live-DB (self-cleaned → DB pristine).
+
+### Operator notes for Jeremy (client #2)
+- Jeremy runs under the **existing TCR brand** (this is a test): buy a **new Twilio number**, attach it
+  to the **existing 10DLC messaging service / campaign** (do NOT register a new brand for a test), then
+  set it as Jeremy's `from_number` in the New-client form so his inbound STOP/"2"/replies route to him
+  (`getClientByInboundNumber` matches on `from_number`, last-10).
+- In the form: `optout_keyword` = `2`; `send_timezone` = `America/New_York` (**Florida is Eastern**);
+  window 10–19; a powerwashing `message_template` (the form pre-fills one) — the preview must end in
+  `Reply "2" to opt out` and stay single-segment. Set `scrub_mode='none'` **on his campaign at upload**
+  (the no-scrub toggle), NOT on the client.
+- Fund Tracerfy for his skip-trace (~$0.02/contact); no-scrub skips only the SCRUB spend.
+- Operational reality: carriers honor STOP regardless of the visible "2" copy, and 10DLC traffic that
+  omits standard STOP language can see more carrier filtering — STOP stays fully working in the
+  classifier no matter what the advertised line says. This is an operator choice.
 
 ## ▶ Send-rate cap raise (2026-06-25) — DONE + DEPLOYED
 The 1,000/hr cap was an early-build artifact; the operator is an A2P-compliant 10DLC sender who wants

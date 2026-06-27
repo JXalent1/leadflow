@@ -7,7 +7,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isOptOut, classifyInterest } from "./classify";
+import { isOptOut, classifyInterest, isConfiguredOptOut } from "./classify";
 
 // ============================================================================
 // isOptOut — comprehensive coverage
@@ -195,6 +195,69 @@ test("isOptOut: ambiguity rule — 'I might want to stop getting these' treated 
 
 test("isOptOut: ambiguity rule — 'maybe remove me?' treated as opt-out", () => {
   assert.equal(isOptOut("maybe remove me?"), true);
+});
+
+// ============================================================================
+// isConfiguredOptOut — per-client ADDITIONAL keyword (exact whole-body match only)
+// ============================================================================
+
+// keyword '2' — only a whole-body "2" (modulo quotes/punctuation/whitespace) opts out.
+test("isConfiguredOptOut('2', kw=2): bare '2' opts out", () => {
+  assert.equal(isConfiguredOptOut("2", "2"), true);
+});
+test("isConfiguredOptOut(' 2 ', kw=2): surrounding whitespace opts out", () => {
+  assert.equal(isConfiguredOptOut(" 2 ", "2"), true);
+});
+test("isConfiguredOptOut('\"2\"', kw=2): quoted opts out", () => {
+  assert.equal(isConfiguredOptOut('"2"', "2"), true);
+});
+test("isConfiguredOptOut('2.', kw=2): trailing period opts out", () => {
+  assert.equal(isConfiguredOptOut("2.", "2"), true);
+});
+test("isConfiguredOptOut: a quoted keyword config ('\"2\"') still matches a bare '2'", () => {
+  assert.equal(isConfiguredOptOut("2", '"2"'), true);
+});
+
+// '2' inside other text must NEVER opt out.
+test("isConfiguredOptOut('2 services please', kw=2): does NOT opt out", () => {
+  assert.equal(isConfiguredOptOut("2 services please", "2"), false);
+});
+test("isConfiguredOptOut('call me at 2pm', kw=2): does NOT opt out", () => {
+  assert.equal(isConfiguredOptOut("call me at 2pm", "2"), false);
+});
+test("isConfiguredOptOut('I have 2 dogs', kw=2): does NOT opt out", () => {
+  assert.equal(isConfiguredOptOut("I have 2 dogs", "2"), false);
+});
+test("isConfiguredOptOut('$200?', kw=2): does NOT opt out", () => {
+  assert.equal(isConfiguredOptOut("$200?", "2"), false);
+});
+test("isConfiguredOptOut('20', kw=2): different number does NOT opt out", () => {
+  assert.equal(isConfiguredOptOut("20", "2"), false);
+});
+
+// A null/blank keyword (Talan / STOP-only) never matches anything via this path.
+test("isConfiguredOptOut('2', kw=null): STOP-only client → does NOT opt out", () => {
+  assert.equal(isConfiguredOptOut("2", null), false);
+});
+test("isConfiguredOptOut('2', kw=undefined): does NOT opt out", () => {
+  assert.equal(isConfiguredOptOut("2", undefined), false);
+});
+test("isConfiguredOptOut('2', kw=''): blank keyword → does NOT opt out", () => {
+  assert.equal(isConfiguredOptOut("2", "   "), false);
+});
+
+// Word keywords work too (exact match), case-insensitive.
+test("isConfiguredOptOut('REMOVE', kw=remove): exact word matches (case-insensitive)", () => {
+  assert.equal(isConfiguredOptOut("REMOVE", "remove"), true);
+});
+test("isConfiguredOptOut('please remove me', kw=remove): NOT a whole-body match", () => {
+  assert.equal(isConfiguredOptOut("please remove me", "remove"), false);
+});
+
+// isConfiguredOptOut must NOT affect / replace STOP — STOP stays isOptOut's job.
+test("isConfiguredOptOut('STOP', kw=2): not the configured keyword → false (STOP handled by isOptOut)", () => {
+  assert.equal(isConfiguredOptOut("STOP", "2"), false);
+  assert.equal(isOptOut("STOP"), true);
 });
 
 // ============================================================================

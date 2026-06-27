@@ -149,6 +149,64 @@ test("orphan STOP (unknown sender): opt-out recorded by phone, no suppress (no c
 });
 
 // ===========================================================================
+// Configured per-client opt-out keyword (additive; exact whole-body match)
+// ===========================================================================
+
+const OPTS_KW2: InboundOptions = {
+  bizName: "Jeremy Powerwashing",
+  emitConfirmation: true,
+  optOutKeyword: "2",
+};
+
+test("configured keyword '2': bare '2' opts out + suppresses (same precedence as STOP)", async () => {
+  const { deps, calls } = makeDeps({ contact: CONTACT });
+  const out = await processInbound(msg("2"), deps, OPTS_KW2);
+  assert.equal(out.kind, "opt_out");
+  assert.equal(calls.recordOptOut.length, 1);
+  assert.deepEqual(calls.markSuppressed[0], { contactId: 7, reason: "opt_out" });
+  assert.equal(calls.createLead.length, 0);
+});
+
+test("configured keyword '2': STOP still opts out unconditionally (keyword is additive)", async () => {
+  const { deps, calls } = makeDeps({ contact: CONTACT });
+  const out = await processInbound(msg("STOP"), deps, OPTS_KW2);
+  assert.equal(out.kind, "opt_out");
+  assert.equal(calls.markSuppressed.length, 1);
+});
+
+test("configured keyword '2': '2 services please' does NOT opt out (exact-match only)", async () => {
+  const { deps, calls } = makeDeps({ contact: CONTACT });
+  const out = await processInbound(msg("2 services please"), deps, OPTS_KW2);
+  assert.notEqual(out.kind, "opt_out");
+  assert.equal(calls.recordOptOut.length, 0);
+  assert.equal(calls.markSuppressed.length, 0);
+});
+
+test("configured keyword '2': 'call me at 2pm' does NOT opt out", async () => {
+  const { deps, calls } = makeDeps({ contact: CONTACT });
+  const out = await processInbound(msg("call me at 2pm"), deps, OPTS_KW2);
+  assert.notEqual(out.kind, "opt_out");
+  assert.equal(calls.markSuppressed.length, 0);
+});
+
+test("no configured keyword (Talan): a bare '2' does NOT opt out", async () => {
+  const { deps, calls } = makeDeps({ contact: CONTACT });
+  const out = await processInbound(msg("2"), deps, OPTS); // OPTS has no optOutKeyword
+  assert.notEqual(out.kind, "opt_out");
+  assert.equal(calls.recordOptOut.length, 0);
+  assert.equal(calls.markSuppressed.length, 0);
+});
+
+test("configured keyword '2': a duplicate '2' (Twilio retry) re-suppresses idempotently, no 2nd confirmation", async () => {
+  const { deps, calls } = makeDeps({ contact: CONTACT, duplicate: true });
+  const out = await processInbound(msg("2"), deps, OPTS_KW2);
+  assert.equal(out.kind, "duplicate");
+  assert.equal(calls.recordOptOut.length, 1, "opt-out re-applied on retry");
+  assert.equal(calls.markSuppressed.length, 1, "suppression re-applied — keyword opt-out never stranded");
+  assert.equal(calls.recordOutbound.length, 0, "no second confirmation on a retry");
+});
+
+// ===========================================================================
 // Idempotency (duplicate MessageSid)
 // ===========================================================================
 

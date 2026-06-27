@@ -3,6 +3,7 @@ import { logout } from "./actions";
 import { getSessionUser } from "@/lib/session";
 import { isOperator } from "@/lib/access";
 import { getCockpitData } from "@/lib/cockpit";
+import { listClients } from "@/lib/clients";
 import CockpitView from "@/components/cockpit-view";
 import AppHeader from "@/components/ui/app-header";
 
@@ -17,9 +18,10 @@ export default async function Home() {
   if (!isOperator(user)) redirect("/client");
 
   let data = null;
+  let clients = null;
   let dbError: string | null = null;
   try {
-    data = await getCockpitData();
+    [data, clients] = await Promise.all([getCockpitData(), listClients()]);
   } catch (err) {
     dbError = err instanceof Error ? err.message : "Unknown database error";
   }
@@ -41,7 +43,7 @@ export default async function Home() {
             Database error: {dbError}
           </p>
         ) : (
-          <CockpitView data={data!} />
+          <CockpitView data={data!} clients={clients!} />
         )}
       </main>
     </div>

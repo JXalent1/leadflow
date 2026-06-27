@@ -10,6 +10,7 @@
 
 import type { CockpitData, CockpitRow } from "@/lib/cockpit";
 import type { Pace } from "@/lib/billing-cycle";
+import type { Client } from "@/lib/clients";
 import type { Tone } from "./ui/badge";
 import Card from "./ui/card";
 import Badge from "./ui/badge";
@@ -17,6 +18,7 @@ import ProgressBar from "./ui/progress-bar";
 import StatTile from "./ui/stat-tile";
 import { CheckIcon, PauseIcon } from "./ui/icons";
 import CockpitBilling from "./cockpit-billing";
+import { ClientFormLauncher, type ClientFormValues } from "./client-form";
 
 const PACE: Record<Pace, { text: string; tone: Tone; bar: "success" | "warning" | "danger" }> = {
   behind: { text: "Behind pace", tone: "warning", bar: "warning" },
@@ -24,10 +26,47 @@ const PACE: Record<Pace, { text: string; tone: Tone; bar: "success" | "warning" 
   met: { text: "Met", tone: "success", bar: "success" },
 };
 
-export default function CockpitView({ data }: { data: CockpitData }) {
+/** Map a full Client record to the serializable subset the Add/Edit form reads/writes. */
+function toFormValues(c: Client): ClientFormValues {
+  return {
+    id: c.id,
+    name: c.name,
+    biz_name: c.biz_name,
+    from_number: c.from_number,
+    messaging_service_sid: c.messaging_service_sid,
+    message_template: c.message_template,
+    forward_phone: c.forward_phone,
+    optout_keyword: c.optout_keyword,
+    optout_instruction: c.optout_instruction,
+    send_window_start_hour: c.send_window_start_hour,
+    send_window_end_hour: c.send_window_end_hour,
+    send_timezone: c.send_timezone,
+    send_rate_per_hour: c.send_rate_per_hour,
+    lead_guarantee: c.lead_guarantee,
+    lead_target: c.lead_target,
+    target_period: c.target_period,
+  };
+}
+
+export default function CockpitView({
+  data,
+  clients,
+}: {
+  data: CockpitData;
+  clients: Client[];
+}) {
+  const configById = new Map(clients.map((c) => [c.id, toFormValues(c)]));
+
   if (data.rows.length === 0) {
     return (
-      <Card className="bg-amber-50/60 text-sm text-amber-800">No clients yet.</Card>
+      <div className="flex flex-col gap-4">
+        <div className="flex justify-end">
+          <ClientFormLauncher mode="create" />
+        </div>
+        <Card className="bg-amber-50/60 text-sm text-amber-800">
+          No clients yet. Use “+ New client” to onboard one.
+        </Card>
+      </div>
     );
   }
 
@@ -46,16 +85,20 @@ export default function CockpitView({ data }: { data: CockpitData }) {
         <StatTile label="On pace" value={onPace} tone={onPace > 0 ? "lead" : "default"} />
       </div>
 
+      <div className="flex justify-end">
+        <ClientFormLauncher mode="create" />
+      </div>
+
       <div className="grid gap-4">
         {data.rows.map((row) => (
-          <ClientCard key={row.clientId} row={row} />
+          <ClientCard key={row.clientId} row={row} config={configById.get(row.clientId)} />
         ))}
       </div>
     </section>
   );
 }
 
-function ClientCard({ row }: { row: CockpitRow }) {
+function ClientCard({ row, config }: { row: CockpitRow; config?: ClientFormValues }) {
   const pace = PACE[row.pace];
   const pct = row.guarantee > 0 ? Math.min(100, Math.round((row.leads / row.guarantee) * 100)) : 0;
 
@@ -76,10 +119,22 @@ function ClientCard({ row }: { row: CockpitRow }) {
           </p>
         </div>
         <div className="flex shrink-0 flex-col items-end gap-1.5">
-          <Badge tone={pace.tone}>
-            {row.pace === "met" ? <CheckIcon className="h-3 w-3" /> : null}
-            {pace.text}
-          </Badge>
+          <div className="flex items-center gap-2">
+            {config ? (
+              <ClientFormLauncher
+                mode="edit"
+                client={config}
+                triggerLabel="Edit"
+                triggerVariant="secondary"
+                triggerSize="sm"
+                stopPropagation
+              />
+            ) : null}
+            <Badge tone={pace.tone}>
+              {row.pace === "met" ? <CheckIcon className="h-3 w-3" /> : null}
+              {pace.text}
+            </Badge>
+          </div>
           {row.autoPaused ? (
             <Badge tone="indigo">
               <PauseIcon className="h-3 w-3" />

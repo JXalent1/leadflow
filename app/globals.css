@@ -2,17 +2,31 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * "Fresh" design system (R1). Accent is a re-themable token, not a hardcoded teal: every kit
+ * component reads the --brand* CSS variables below (mapped to `brand` utilities in tailwind.config).
+ * Default = LeadFlow teal. The white-label client portal (R3) overrides --brand on a wrapper element
+ * to re-theme everything inside it — no component change needed.
+ */
 :root {
   color-scheme: light;
+
+  --brand: #1d9e75; /* teal-600 — primary accent */
+  --brand-strong: #0f6e56; /* teal-700 — hover / emphasis */
+  --brand-fg: #ffffff; /* readable text/icon on a brand fill */
+  --brand-tint: #e1f5ee; /* soft accent background */
+  --brand-tint-fg: #0f6e56; /* readable text on the tint */
 }
 
 body {
-  @apply bg-slate-50 text-slate-900;
+  /* Warm neutral canvas (stone), not pure-cool slate. */
+  @apply bg-stone-50 text-stone-900;
 }
 
-/* Subtle, consistent focus ring across the app's interactive elements. */
+/* Subtle, consistent brand focus ring across the app's interactive elements. */
 @layer base {
   *:focus-visible {
-    @apply outline-none ring-2 ring-indigo-500/60 ring-offset-2 ring-offset-white;
+    @apply outline-none ring-2 ring-offset-2 ring-offset-white;
+    --tw-ring-color: var(--brand);
   }
 }

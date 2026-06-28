@@ -81,3 +81,12 @@ export function InboxIcon({ className = "h-4 w-4", ...p }: IconProps) {
     </svg>
   );
 }
+
+// A friendly "service" glyph (a clean spark) used as the leading icon on cockpit client cards.
+export function SparkleIcon({ className = "h-4 w-4", ...p }: IconProps) {
+  return (
+    <svg className={className} {...base} {...p}>
+      <path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3z" />
+    </svg>
+  );
+}

@@ -166,11 +166,11 @@ async function main() {
     check("getInboxThreads(2) includes ONLY the client-2 contact", inbox2.length === 1 && inbox2[0].id === c2ContactId);
 
     // === 3. Suppression / opt-out never crosses clients ===
-    check("isPhoneOptedOut(2, c2phone) = true (client 2 owns the opt-out)", (await isPhoneOptedOut(2, C2_PHONE)) === true);
+    check("isPhoneOptedOut(C2, c2phone) = true (client 2 owns the opt-out)", (await isPhoneOptedOut(C2, C2_PHONE)) === true);
     check("isPhoneOptedOut(1, c2phone) = false (client 1 must NOT see client 2's opt-out)", (await isPhoneOptedOut(1, C2_PHONE)) === false);
 
     // === 4. Contact lookup never crosses clients ===
-    check("findContactByPhone(2, c2phone) finds the client-2 contact", (await findContactByPhone(2, C2_PHONE))?.id === c2ContactId);
+    check("findContactByPhone(C2, c2phone) finds the client-2 contact", (await findContactByPhone(C2, C2_PHONE))?.id === c2ContactId);
     check("findContactByPhone(1, c2phone) = null (client 1 can't see client 2's contact)", (await findContactByPhone(1, C2_PHONE)) === null);
 
     // === 5. Webhook routes strictly by To → owning client ===

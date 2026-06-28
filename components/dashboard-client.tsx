@@ -65,14 +65,14 @@ export default function DashboardClient({
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-center justify-between text-xs text-slate-400">
+      <div className="flex items-center justify-between text-xs text-stone-400">
         <span>
           {staleError
             ? "⚠ Could not refresh — showing last good data."
             : `Last updated ${formatTime(data.fetchedAt)}`}
           {refreshing ? " · refreshing…" : ""}
         </span>
-        <button onClick={refresh} className="font-medium hover:text-slate-900">
+        <button onClick={refresh} className="font-medium hover:text-stone-900">
           Refresh now
         </button>
       </div>
@@ -86,15 +86,15 @@ export default function DashboardClient({
       />
 
       <div className="flex flex-wrap items-center gap-2 text-sm">
-        <span className="text-slate-500">
+        <span className="text-stone-500">
           Leads this {data.autoPause.period}:{" "}
-          <span className="font-semibold tabular-nums text-slate-900">
+          <span className="font-medium tabular-nums text-stone-900">
             {data.autoPause.leadsThisPeriod}/{data.autoPause.target}
           </span>{" "}
           target
         </span>
         {data.autoPause.met ? (
-          <Badge tone="indigo">
+          <Badge tone="brand">
             <PauseIcon className="h-3 w-3" />
             Auto-paused — target met, resumes {data.autoPause.nextPeriod}
           </Badge>

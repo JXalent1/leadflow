@@ -27,19 +27,19 @@ export default async function Home() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-50">
+    <div className="min-h-screen bg-stone-50">
       <AppHeader email={user.email} logout={logout} />
 
       <main className="mx-auto flex max-w-6xl flex-col gap-6 px-6 py-8">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-slate-900">Operator cockpit</h1>
-          <p className="mt-1 text-sm text-slate-500">
+          <h1 className="text-2xl font-medium tracking-tight text-stone-900">Operator cockpit</h1>
+          <p className="mt-1 text-sm text-stone-500">
             Every client at a glance — leads this cycle against their guarantee.
           </p>
         </div>
 
         {dbError ? (
-          <p className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          <p className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
             Database error: {dbError}
           </p>
         ) : (

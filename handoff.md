@@ -15,8 +15,46 @@ client) or if the id is < 100000. Cleanups now also drop `trace_jobs`/`scrub_job
 a destructive live-DB fixture without checking it can't touch a real tenant.**
 
 
-_Last updated: 2026-06-27 (Claude Code — multi-recipient lead forwarding: forward_phone can hold several
-comma-separated numbers so a lead pings more than one person. Single-number behavior byte-unchanged.)_
+_Last updated: 2026-06-28 (Claude Code — Revamp R1: the "Fresh" teal/warm/rounded design system replaces
+the V7 indigo look across login/cockpit/dashboard; the accent is a re-themable `--brand` CSS-var token.)_
+
+## ▶ Revamp R1 — "Fresh" design system (2026-06-28) — DONE + DEPLOYED
+Visual-only retheme of the shared kit + login/cockpit/dashboard from the V7 **indigo/slate** look to the
+**"Fresh"** identity: warm, rounded, friendly, **teal**. **NO app logic / routes / queries / suppression /
+eligibility / send path / auth / component props changed — presentation only.** This is R1 of 3
+(R2 = inbox + campaign/run screens; R3 = white-label client portal).
+- **The accent is a TOKEN, not a value (load-bearing for R3).** `app/globals.css :root` defines
+  `--brand` `#1d9e75` / `--brand-strong` `#0f6e56` / `--brand-fg` `#fff` / `--brand-tint` `#e1f5ee` /
+  `--brand-tint-fg` `#0f6e56`; `tailwind.config.ts` maps a `brand` color family to those vars. Every kit
+  component uses `bg-brand` / `text-brand-strong` / `ring-brand-tint` / `hover:bg-brand-strong` —
+  **never a literal teal**. **Overriding `--brand*` on any wrapper element re-themes its whole subtree**
+  with no component change → that's how R3 will white-label per client. Proven in the compiled CSS (every
+  `brand` utility resolves to `var(--brand*)`; `:root` holds the teal defaults). **GOTCHA:** these are hex
+  vars, so Tailwind `/opacity` modifiers (`text-brand-strong/80`) do NOT work on brand utilities — use
+  solid brand classes (I hit + removed one).
+- **Shape/type/neutrals:** neutrals **slate → warm stone** (kit + the 3 screens; out-of-scope inbox/portal
+  still use slate until R2/R3); cards **16px** `rounded-2xl`, controls `rounded-xl`; Inter kept but **two
+  weights (400/500)** (`font-semibold`→`font-medium`) and **sentence case everywhere** (StatTile/Health/
+  cockpit-status labels lost their `uppercase`); new teal **droplet** wordmark + a `SparkleIcon` used as
+  the leading **service icon** on each cockpit client card (a brand-tinted tile — there's no service-type
+  field, so it's a neutral white-label-friendly mark, not data).
+- **Kit changes keep the SAME props** (`components/ui/*`): Button (primary = teal solid), Card/CardHeader,
+  StatTile (sentence-case label + tinted `good` = brand), **Badge `indigo` tone → `brand`** (updated its
+  only 2 consumers: cockpit-view, dashboard-client), Field/Input/Select (teal focus ring), **ProgressBar
+  `indigo`→`brand`** (default + send-progress), **SegmentedToggle** active = `brand` but **`indigo` kept as
+  a legacy alias mapping to the same teal** so the out-of-scope `campaign-bar.tsx` (`activeTone:"indigo"`)
+  still compiles, AppHeader. Global focus ring is now `--brand`.
+- **Drive-by fixture fix (pre-existing RED on clean HEAD):** the 2026-06-27 INCIDENT-fix moved the
+  throwaway tenant to `C2 = 900002`, but 4 assertions in `isolation`/`access` fixtures still compared the
+  *owned/resolved* client id against the old literal `2` (real client Jermey) → 2+2 failures. Fixed `2`→`C2`
+  on exactly those (`isPhoneOptedOut`/`findContactByPhone` in isolation; the resolve-to-own-client checks in
+  access). The literal `2`s that are arbitrary *requested* ids were already correct and left alone.
+- **Green:** tsc clean, `npm run build` green, `npm test` = **258**, isolation/access/cockpit/auto-pause/
+  passthrough/optout/forward ALL pass. Deployed `vercel --prod`.
+- **R2 next:** restyle `/inbox` (`components/inbox/*`) + the campaign/run detail screens to Fresh (same
+  token system; switch their slate→stone, indigo→brand). **R3:** white-label client portal (`/client`) —
+  set `--brand*` per client on a wrapper + per-client logo/name; decide in-app branding vs. custom domain,
+  logo upload vs. monogram.
 
 ## ▶ Multi-recipient lead forwarding (2026-06-27) — DONE
 A client's `forward_phone` may now hold SEVERAL numbers so each lead pings more than one person (e.g.

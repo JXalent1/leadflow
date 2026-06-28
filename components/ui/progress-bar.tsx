@@ -1,12 +1,13 @@
 /**
- * components/ui/progress-bar.tsx — a rounded track + fill. `tone` colors the fill consistently
- * (pace/send). Clamps value to [0,100]. Directive-free.
+ * components/ui/progress-bar.tsx — a rounded track + fill ("Fresh"). `tone` colors the fill
+ * consistently (pace/send); the default `brand` fill reads the --brand* CSS vars so it re-themes per
+ * client. Clamps value to [0,100]. Directive-free.
  */
 
-type BarTone = "indigo" | "success" | "warning" | "danger";
+type BarTone = "brand" | "success" | "warning" | "danger";
 
 const FILL: Record<BarTone, string> = {
-  indigo: "bg-indigo-600",
+  brand: "bg-brand",
   success: "bg-emerald-500",
   warning: "bg-amber-500",
   danger: "bg-red-500",
@@ -14,7 +15,7 @@ const FILL: Record<BarTone, string> = {
 
 export default function ProgressBar({
   value,
-  tone = "indigo",
+  tone = "brand",
   className = "",
   height = "h-2",
 }: {
@@ -26,7 +27,7 @@ export default function ProgressBar({
   const pct = Math.max(0, Math.min(100, Math.round(value)));
   return (
     <div
-      className={`w-full overflow-hidden rounded-full bg-slate-100 ${height} ${className}`}
+      className={`w-full overflow-hidden rounded-full bg-stone-100 ${height} ${className}`}
       role="progressbar"
       aria-valuenow={pct}
       aria-valuemin={0}

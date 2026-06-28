@@ -228,7 +228,7 @@ export default function PipelineRunner({
   }
 
   return (
-    <Card className="ring-1 ring-indigo-100">
+    <Card className="ring-1 ring-brand-tint">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <CardHeader
           title="Run pipeline"
@@ -238,7 +238,7 @@ export default function PipelineRunner({
         <div className="flex items-end gap-2">
           {/* Live send-rate control — change takes effect on the next batch, no redeploy. */}
           <div className="flex flex-col gap-1">
-            <label htmlFor="rate-input" className="text-xs font-medium text-slate-500">
+            <label htmlFor="rate-input" className="text-xs font-medium text-stone-500">
               Rate/hr
             </label>
             <Input
@@ -271,17 +271,17 @@ export default function PipelineRunner({
       </div>
 
       {running || stage ? (
-        <div className="mt-3 flex flex-wrap items-center gap-3 rounded-lg bg-indigo-50 px-3 py-2 text-sm">
-          <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-indigo-500" />
-          <span className="font-medium text-indigo-900">{stage ? `${stage}…` : "Working…"}</span>
-          <span className="text-indigo-700/70">
+        <div className="mt-3 flex flex-wrap items-center gap-3 rounded-xl bg-brand-tint px-3 py-2 text-sm">
+          <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-brand" />
+          <span className="font-medium text-brand-strong">{stage ? `${stage}…` : "Working…"}</span>
+          <span className="text-brand-strong">
             traced {tally.traced} · clean {tally.clean} · sent {tally.sent} · failed {tally.failed}
           </span>
         </div>
       ) : null}
 
       {!withinWindow ? (
-        <p className="mt-2 text-xs text-slate-400">
+        <p className="mt-2 text-xs text-stone-400">
           Note: the send window ({windowLabel}) is closed — trace + scrub will run now; the send
           stage will pause until the window opens.
         </p>
@@ -329,17 +329,17 @@ function ConfirmModal({
 }) {
   const armed = confirmText.trim().toUpperCase() === "CONFIRM";
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 px-4 backdrop-blur-sm">
-      <div className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-6 shadow-2xl">
-        <h3 className="text-lg font-semibold text-slate-900">Run the full pipeline?</h3>
-        <p className="mt-2 text-sm text-slate-600">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-stone-900/40 px-4 backdrop-blur-sm">
+      <div className="w-full max-w-md rounded-2xl border border-stone-200 bg-white p-6 shadow-2xl">
+        <h3 className="text-lg font-medium text-stone-900">Run the full pipeline?</h3>
+        <p className="mt-2 text-sm text-stone-600">
           This will skip-trace, DNC/litigator-scrub, then send{" "}
-          <span className="font-semibold text-slate-900">real SMS</span> to every eligible contact in
+          <span className="font-medium text-stone-900">real SMS</span> to every eligible contact in
           this campaign (paced, within {windowLabel}). It spends Tracerfy credits and sends real
           messages, and cannot be undone. It runs to completion on its own and is resumable.
         </p>
-        <p className="mt-3 text-sm text-slate-600">
-          Type <span className="font-mono font-semibold text-slate-900">CONFIRM</span> to proceed:
+        <p className="mt-3 text-sm text-stone-600">
+          Type <span className="font-mono font-medium text-stone-900">CONFIRM</span> to proceed:
         </p>
         <Input
           autoFocus

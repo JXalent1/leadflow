@@ -48,7 +48,7 @@ export default async function DashboardPage({
   }
 
   return (
-    <div className="min-h-screen bg-slate-50">
+    <div className="min-h-screen bg-stone-50">
       <AppHeader
         email={user.email}
         logout={logout}
@@ -56,7 +56,7 @@ export default async function DashboardPage({
           <>
             <a
               href="/"
-              className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-sm font-medium text-slate-500 transition-colors hover:text-slate-900"
+              className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-sm font-medium text-stone-500 transition-colors hover:text-stone-900"
             >
               <ArrowLeftIcon className="h-4 w-4" />
               <span className="hidden sm:inline">All clients</span>
@@ -71,10 +71,10 @@ export default async function DashboardPage({
 
       <main className="mx-auto flex max-w-6xl flex-col gap-6 px-6 py-8">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-slate-900">
+          <h1 className="text-2xl font-medium tracking-tight text-stone-900">
             {clientName || "Client"}
           </h1>
-          <p className="mt-1 text-sm text-slate-500">
+          <p className="mt-1 text-sm text-stone-500">
             Campaign dashboard{initial ? ` · ${initial.campaignName}` : ""}
           </p>
         </div>
@@ -86,11 +86,11 @@ export default async function DashboardPage({
         />
 
         {initialError ? (
-          <p className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          <p className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
             Database error: {initialError}
           </p>
         ) : !initial ? (
-          <p className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          <p className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
             No campaign yet. Upload a CSV list above to create one and start the pipeline.
           </p>
         ) : (

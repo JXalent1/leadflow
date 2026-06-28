@@ -1,10 +1,10 @@
 /**
- * components/ui/button.tsx — the one button in the LeadFlow kit.
+ * components/ui/button.tsx — the one button in the LeadFlow kit ("Fresh").
  *
- * Variants: primary (indigo), secondary (bordered), ghost (text), danger (red). Sizes sm/md.
- * Supports `loading` (spinner + disabled) and `disabled`. Renders an <a> when `href` is set so
- * links and buttons share styling. Directive-free so it renders on the server AND inside client
- * components (event handlers come from a client parent).
+ * Variants: primary (teal/brand solid), secondary (outline), ghost (text), danger (red). Sizes sm/md.
+ * The brand fill reads the --brand* CSS vars so it re-themes per client. Supports `loading`
+ * (spinner + disabled) and `disabled`. Renders an <a> when `href` is set so links and buttons share
+ * styling. Directive-free so it renders on the server AND inside client components.
  */
 import type { ButtonHTMLAttributes, ReactNode } from "react";
 import { SpinnerIcon } from "./icons";
@@ -13,11 +13,10 @@ type Variant = "primary" | "secondary" | "ghost" | "danger";
 type Size = "sm" | "md";
 
 const VARIANT: Record<Variant, string> = {
-  primary:
-    "bg-indigo-600 text-white shadow-sm hover:bg-indigo-700 disabled:bg-indigo-300",
+  primary: "bg-brand text-brand-fg shadow-sm hover:bg-brand-strong",
   secondary:
-    "border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 disabled:text-slate-400",
-  ghost: "text-slate-600 hover:bg-slate-100 hover:text-slate-900",
+    "border border-stone-300 bg-white text-stone-700 hover:bg-stone-50 disabled:text-stone-400",
+  ghost: "text-stone-600 hover:bg-stone-100 hover:text-stone-900",
   danger: "bg-red-600 text-white shadow-sm hover:bg-red-500 disabled:bg-red-300",
 };
 
@@ -27,7 +26,7 @@ const SIZE: Record<Size, string> = {
 };
 
 const BASE =
-  "inline-flex items-center justify-center rounded-lg font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60 whitespace-nowrap";
+  "inline-flex items-center justify-center rounded-xl font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60 whitespace-nowrap";
 
 export function buttonClasses(opts?: {
   variant?: Variant;

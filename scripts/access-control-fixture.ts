@@ -98,12 +98,12 @@ async function main() {
     // === 1. THE CLOSED GATE: a client user can never resolve to another client ===
     for (const requested of [undefined, 1, 2, 3, 999] as (number | undefined)[]) {
       const resolved = resolveClientIdForUser(c2Db, requested);
-      // Only ever their own client (2) or denied (null) — never another client's id (e.g. 1).
-      const ok = resolved === 2 || resolved === null;
+      // Only ever their own client (C2) or denied (null) — never another client's id (e.g. 1).
+      const ok = resolved === C2 || resolved === null;
       check(`client-2 user + ?clientId=${requested} → ${resolved} (never another client)`, ok);
     }
     check("client-2 user requesting client 1 is DENIED (null → 403)", resolveClientIdForUser(c2Db, 1) === null);
-    check("client-2 user with no param → their own client (2)", resolveClientIdForUser(c2Db, undefined) === 2);
+    check("client-2 user with no param → their own client (C2)", resolveClientIdForUser(c2Db, undefined) === C2);
     check("client-1 user requesting client 2 is DENIED", resolveClientIdForUser(await getUserById(c1u.id), 2) === null);
 
     // === 2. Operator keeps legitimate cross-client access ===

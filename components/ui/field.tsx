@@ -1,12 +1,13 @@
 /**
- * components/ui/field.tsx — form field primitives. `Field` wraps a control with a label, optional
- * help text, and an inline error (the label is tied to the control via htmlFor/id). `Input` and
- * `Select` are the styled controls. Directive-free so they work in server + client trees.
+ * components/ui/field.tsx — form field primitives ("Fresh"). `Field` wraps a control with a label,
+ * optional help text, and an inline error (the label is tied to the control via htmlFor/id). `Input`
+ * and `Select` are the styled controls — rounded, warm border, teal/brand focus ring. Directive-free
+ * so they work in server + client trees.
  */
 import type { InputHTMLAttributes, ReactNode, SelectHTMLAttributes } from "react";
 
 export const inputClasses =
-  "w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 transition-colors focus:border-indigo-500 disabled:bg-slate-50 disabled:text-slate-400";
+  "w-full rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm text-stone-900 placeholder:text-stone-400 transition-colors focus:border-brand disabled:bg-stone-50 disabled:text-stone-400";
 
 export function Field({
   label,
@@ -26,7 +27,7 @@ export function Field({
   return (
     <div className={`flex flex-col gap-1.5 ${className}`}>
       {label ? (
-        <label htmlFor={htmlFor} className="text-sm font-medium text-slate-700">
+        <label htmlFor={htmlFor} className="text-sm font-medium text-stone-700">
           {label}
         </label>
       ) : null}
@@ -34,7 +35,7 @@ export function Field({
       {error ? (
         <p className="text-xs text-red-600">{error}</p>
       ) : help ? (
-        <p className="text-xs text-slate-500">{help}</p>
+        <p className="text-xs text-stone-500">{help}</p>
       ) : null}
     </div>
   );

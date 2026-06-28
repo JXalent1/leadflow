@@ -16,7 +16,7 @@ import Card from "./ui/card";
 import Badge from "./ui/badge";
 import ProgressBar from "./ui/progress-bar";
 import StatTile from "./ui/stat-tile";
-import { CheckIcon, PauseIcon } from "./ui/icons";
+import { CheckIcon, PauseIcon, SparkleIcon } from "./ui/icons";
 import CockpitBilling from "./cockpit-billing";
 import { ClientFormLauncher, type ClientFormValues } from "./client-form";
 
@@ -64,7 +64,7 @@ export default function CockpitView({
           <ClientFormLauncher mode="create" />
         </div>
         <Card className="bg-amber-50/60 text-sm text-amber-800">
-          No clients yet. Use “+ New client” to onboard one.
+          No clients yet. Use “New client” to onboard one.
         </Card>
       </div>
     );
@@ -105,18 +105,23 @@ function ClientCard({ row, config }: { row: CockpitRow; config?: ClientFormValue
   return (
     <Card href={`/dashboard?clientId=${row.clientId}`} interactive>
       <div className="flex items-start justify-between gap-4">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <h2 className="truncate text-lg font-semibold text-slate-900">{row.name}</h2>
-            {row.status !== "active" ? (
-              <Badge tone="neutral" className="uppercase tracking-wide">
-                {row.status}
-              </Badge>
-            ) : null}
+        <div className="flex min-w-0 items-start gap-3">
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-brand-tint text-brand-tint-fg">
+            <SparkleIcon className="h-5 w-5" />
+          </span>
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <h2 className="truncate text-lg font-medium text-stone-900">{row.name}</h2>
+              {row.status !== "active" ? (
+                <Badge tone="neutral" className="capitalize">
+                  {row.status}
+                </Badge>
+              ) : null}
+            </div>
+            <p className="mt-0.5 text-xs text-stone-500">
+              {row.daysLeft} day{row.daysLeft === 1 ? "" : "s"} left in cycle
+            </p>
           </div>
-          <p className="mt-0.5 text-xs text-slate-500">
-            {row.daysLeft} day{row.daysLeft === 1 ? "" : "s"} left in cycle
-          </p>
         </div>
         <div className="flex shrink-0 flex-col items-end gap-1.5">
           <div className="flex items-center gap-2">
@@ -136,7 +141,7 @@ function ClientCard({ row, config }: { row: CockpitRow; config?: ClientFormValue
             </Badge>
           </div>
           {row.autoPaused ? (
-            <Badge tone="indigo">
+            <Badge tone="brand">
               <PauseIcon className="h-3 w-3" />
               Auto-paused · {row.leadsThisPeriod}/{row.target} this {row.targetPeriod}
             </Badge>
@@ -145,8 +150,8 @@ function ClientCard({ row, config }: { row: CockpitRow; config?: ClientFormValue
       </div>
 
       <div className="mt-4 flex items-baseline gap-2">
-        <span className="text-3xl font-semibold tabular-nums text-slate-900">{row.leads}</span>
-        <span className="text-lg text-slate-400">/ {row.guarantee} leads</span>
+        <span className="text-3xl font-medium tabular-nums text-stone-900">{row.leads}</span>
+        <span className="text-lg text-stone-400">/ {row.guarantee} leads</span>
         {row.pace === "behind" ? (
           <span className="ml-auto text-xs font-medium text-amber-700">
             ~{row.expected} expected by now
@@ -174,9 +179,9 @@ function ClientCard({ row, config }: { row: CockpitRow; config?: ClientFormValue
 
 function Health({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-lg bg-slate-50 px-3 py-2">
-      <div className="text-base font-semibold tabular-nums text-slate-900">{value}</div>
-      <div className="mt-0.5 text-[11px] uppercase tracking-wide text-slate-500">{label}</div>
+    <div className="rounded-xl bg-stone-50 px-3 py-2">
+      <div className="text-base font-medium tabular-nums text-stone-900">{value}</div>
+      <div className="mt-0.5 text-[11px] text-stone-500">{label}</div>
     </div>
   );
 }

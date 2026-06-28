@@ -19,18 +19,18 @@ export default async function LoginPage({
   if (user) redirect(isOperator(user) ? "/" : "/client");
 
   return (
-    <main className="flex min-h-screen flex-col items-center justify-center bg-slate-50 px-6 py-12">
+    <main className="flex min-h-screen flex-col items-center justify-center bg-stone-50 px-6 py-12">
       <div className="w-full max-w-sm">
         <div className="mb-8 flex flex-col items-center text-center">
           <Wordmark size="lg" />
-          <p className="mt-3 text-sm text-slate-500">
+          <p className="mt-3 text-sm text-stone-500">
             SMS lead generation for home-service businesses.
           </p>
         </div>
 
         <LoginForm action={login} hasError={searchParams.error === "1"} />
 
-        <p className="mt-6 text-center text-xs text-slate-400">
+        <p className="mt-6 text-center text-xs text-stone-400">
           Authorized operators &amp; clients only.
         </p>
       </div>

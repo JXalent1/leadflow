@@ -17,7 +17,8 @@ config();
 import {
   renderMessage,
   segmentInfo,
-  withinSingleSegment,
+  withinSegmentLimit,
+  MAX_MESSAGE_SEGMENTS,
   TALAN_MESSAGE_TEMPLATE,
 } from "@/lib/sms";
 import { sendOne, getSenderField, sendWindowLabel } from "@/lib/twilio";
@@ -61,10 +62,13 @@ async function main() {
   hr("MESSAGE");
   console.log("to:", to);
   console.log("body:", body);
-  console.log(`length: ${seg.length}  segments: ${seg.segments}  encoding: ${seg.encoding}`);
+  console.log(`length: ${seg.length}  segments: ${seg.segments}  encoding: ${seg.encoding} (cap ${MAX_MESSAGE_SEGMENTS})`);
+  if (seg.segments > 1) {
+    console.log(`note: ${seg.segments}-segment message — costs ~${seg.segments}× per send (within the ${MAX_MESSAGE_SEGMENTS}-segment campaign cap).`);
+  }
 
-  if (!withinSingleSegment(body)) {
-    throw new Error("Rendered message is more than one segment — aborting (would never send 2 segments).");
+  if (!withinSegmentLimit(body)) {
+    throw new Error(`Rendered message is ${seg.segments} segments — over the ${MAX_MESSAGE_SEGMENTS}-segment cap; aborting (the campaign would drain this to 'failed').`);
   }
 
   hr("SENDING");

@@ -153,10 +153,10 @@ function titleCase(value?: string | null): string {
  *  - [ADDRESS] → contact.address, title-cased (county data is ALL CAPS → never sent caps).
  *  - [BIZ]     → bizName (for branded clients; Talan's copy has no [BIZ]).
  *  - [ZIP]     → contact.zip, or "your area" when missing.
- *  - {...}     → an OPTIONAL clause. Kept when it fits one GSM-7 segment AND every placeholder
- *               inside it resolved non-empty; otherwise the whole span (incl. its leading text,
- *               e.g. " at ") is dropped. This reproduces Talan's single-segment auto-fallback:
- *               the address clause stays when it fits and is dropped when it would overflow.
+ *  - {...}     → an OPTIONAL clause. Kept when the full message stays within MAX_MESSAGE_SEGMENTS
+ *               AND every placeholder inside it resolved non-empty; otherwise the whole span (incl.
+ *               its leading text, e.g. " at ") is dropped. The address clause stays unless keeping
+ *               it would push the message PAST the segment cap (no longer dropped at 1 segment).
  *
  * Hard requirement: every returned string MUST carry an opt-out line. By default that line is
  * "Reply STOP to opt out" (OPT_OUT_PHRASE); a per-client client passes its configured instruction
@@ -193,11 +193,13 @@ export function renderMessage(
     const rawClause = clauseMatch[1];
     const full = subst(template.replace(/\{([^}]*)\}/, "$1"));
     const dropped = subst(template.replace(/\{[^}]*\}/, ""));
-    // Drop the clause if a placeholder inside it resolved empty, or keeping it overflows a segment.
+    // Drop the clause if a placeholder inside it resolved empty, or keeping it would push the
+    // message PAST the segment cap (MAX_MESSAGE_SEGMENTS). The clause is no longer dropped merely
+    // for crossing one segment — multi-segment copy is allowed up to the cap.
     const clauseHasEmpty = Object.entries(vals).some(
       ([k, v]) => v === "" && rawClause.includes(k)
     );
-    message = clauseHasEmpty || !withinSingleSegment(full) ? dropped : full;
+    message = clauseHasEmpty || !withinSegmentLimit(full) ? dropped : full;
   }
 
   // Collapse any double space left by a dropped placeholder, and tidy a stray space before
@@ -299,7 +301,25 @@ export function segmentInfo(message: string): SegmentInfo {
 
 /**
  * Returns true if the message fits within a single SMS segment.
+ * Kept for callers that genuinely need EXACTLY one segment.
  */
 export function withinSingleSegment(message: string): boolean {
   return segmentInfo(message).segments === 1;
+}
+
+/**
+ * Hard ceiling on a campaign message's length, in SMS segments. Campaign sends may be more than one
+ * segment (longer per-client copy) up to this cap; a message OVER the cap is drained to 'failed'
+ * rather than sent, so a pathological template can't blast many segments of cost. (Supersedes the
+ * 2026-06-22 single-segment pilot rule — see overview.md.) NOTE: 2–3 segment cold texts cost ~2–3×
+ * per send and can raise carrier filtering / opt-outs — a per-message operator choice.
+ */
+export const MAX_MESSAGE_SEGMENTS = 3;
+
+/**
+ * Returns true if the message fits within `max` SMS segments (default MAX_MESSAGE_SEGMENTS). This is
+ * the campaign send-path length rule: within the cap → send; over the cap → drain to 'failed'.
+ */
+export function withinSegmentLimit(message: string, max: number = MAX_MESSAGE_SEGMENTS): boolean {
+  return segmentInfo(message).segments <= max;
 }

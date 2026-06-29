@@ -56,7 +56,7 @@ import {
   type Client,
 } from "@/lib/clients";
 import { getTargetStatus } from "@/lib/auto-pause";
-import { renderMessage, withinSingleSegment, type Variant } from "@/lib/sms";
+import { renderMessage, withinSegmentLimit, MAX_MESSAGE_SEGMENTS, segmentInfo, type Variant } from "@/lib/sms";
 import {
   sendOne,
   withinSendWindow,
@@ -375,12 +375,13 @@ async function runSend(
       optOutLine
     );
 
-    // Never send a 2-segment message. Drain the contact (claim -> 'failed') so it
-    // leaves the eligible pool instead of being re-rendered+re-skipped on every run.
+    // Messages may be multi-segment up to MAX_MESSAGE_SEGMENTS. Only a message OVER the cap is
+    // drained (claim -> 'failed') so it leaves the eligible pool instead of being re-rendered +
+    // re-skipped every run — a hard ceiling so a runaway template can't blast many segments of cost.
     // Does NOT advance attemptIndex (no message was assigned to a real send).
-    if (!withinSingleSegment(body)) {
+    if (!withinSegmentLimit(body)) {
       r.skippedOverflow++;
-      console.warn(`[campaign] overflow contact=${c.id} variant=${variant} len=${body.length} -> failed`);
+      console.warn(`[campaign] over segment cap (>${MAX_MESSAGE_SEGMENTS}) contact=${c.id} variant=${variant} len=${body.length} segs=${segmentInfo(body).segments} -> failed`);
       if (await claimForSend(clientId, c.id)) await setSendStatus(clientId, c.id, "failed");
       continue;
     }

@@ -17,6 +17,8 @@ import {
   isNonHumanName,
   segmentInfo,
   withinSingleSegment,
+  withinSegmentLimit,
+  MAX_MESSAGE_SEGMENTS,
   optOutInstructionFor,
   TALAN_MESSAGE_TEMPLATE,
 } from "./sms";
@@ -106,6 +108,15 @@ test("renderMessage (Talan): normal name → 'Hey James busy season...'", () => 
   assert.ok(msg.startsWith("Hey James busy season is here,"), `got: "${msg}"`);
 });
 
+test("renderMessage (Talan): typical 1-segment render is BYTE-IDENTICAL (unchanged by the segment-cap raise)", () => {
+  const msg = renderMessage(TALAN, TYPICAL_CONTACT, BIZ);
+  assert.equal(
+    msg,
+    "Hey James busy season is here, we are working close by if you were interested in window cleaning services at 123 Main St. Reply STOP to opt out"
+  );
+  assert.equal(segmentInfo(msg).segments, 1, "Talan's typical render must stay 1 segment");
+});
+
 test("renderMessage (Talan): null name → 'Hey there busy season...'", () => {
   const msg = renderMessage(TALAN, NULL_CONTACT, BIZ);
   assert.ok(msg.startsWith("Hey there busy season is here,"), `got: "${msg}"`);
@@ -135,15 +146,26 @@ test("renderMessage (Talan): ends verbatim with 'Reply STOP to opt out' (no peri
   assert.ok(msg.endsWith("Reply STOP to opt out"), `got: "${msg}"`);
 });
 
-test("renderMessage (Talan): drops only the address clause when over one segment", () => {
-  const longAddress = "1234 " + "VERYLONGSTREETNAME ".repeat(8) + "BOULEVARD";
+test("renderMessage (Talan): a moderately long address now KEEPS the clause (2 segments ≤ cap)", () => {
+  // Previously this dropped at 1 segment; with the relaxed cap a 2-segment message keeps the clause.
+  const longAddress = "1234 " + "Verylongstreetname ".repeat(3) + "Boulevard";
   const msg = renderMessage(TALAN, { firstName: "James", zip: "32301", address: longAddress }, BIZ);
-  assert.ok(withinSingleSegment(msg), `fallback must be single-segment, got ${segmentInfo(msg).segments}`);
-  assert.ok(!msg.includes(" at "), `fallback must drop the "at <address>" clause: "${msg}"`);
+  const seg = segmentInfo(msg);
+  assert.ok(seg.segments >= 2, `expected a multi-segment message, got ${seg.segments}`);
+  assert.ok(withinSegmentLimit(msg), `must stay within the cap, got ${seg.segments}`);
+  assert.ok(msg.includes(" at "), `clause must be kept within the cap: "${msg}"`);
+  assert.ok(msg.endsWith("Reply STOP to opt out"), `got: "${msg}"`);
+});
+
+test("renderMessage (Talan): drops the address clause only when keeping it would exceed the cap", () => {
+  const pathological = "1234 " + "VERYLONGSTREETNAME ".repeat(40) + "BOULEVARD";
+  const msg = renderMessage(TALAN, { firstName: "James", zip: "32301", address: pathological }, BIZ);
+  assert.ok(!msg.includes(" at "), `over-cap fallback must drop the "at <address>" clause: "${msg}"`);
   assert.ok(
     msg.endsWith("interested in window cleaning services. Reply STOP to opt out"),
     `fallback wording must match the approved no-address copy: "${msg}"`
   );
+  assert.ok(withinSegmentLimit(msg), `the dropped fallback itself must be within the cap`);
 });
 
 test("renderMessage (Talan): blank address → drops the clause (no dangling 'at ')", () => {
@@ -323,6 +345,46 @@ test("withinSingleSegment: emoji message over 70 → false", () => {
 });
 
 // ---------------------------------------------------------------------------
+// withinSegmentLimit / MAX_MESSAGE_SEGMENTS — the campaign send-guard predicate
+// ---------------------------------------------------------------------------
+// The send loop drains a contact to 'failed' iff `!withinSegmentLimit(body)`. These prove a 1–3
+// segment message PASSES the guard (sends) and a 4+ segment message is drained (fail-closed cap).
+
+test("MAX_MESSAGE_SEGMENTS default is 3", () => {
+  assert.equal(MAX_MESSAGE_SEGMENTS, 3);
+});
+
+test("withinSegmentLimit: a 1-segment message passes (would send)", () => {
+  // 1 segment = up to 160 GSM-7 units.
+  assert.equal(segmentInfo("A".repeat(160)).segments, 1);
+  assert.equal(withinSegmentLimit("A".repeat(160)), true);
+});
+
+test("withinSegmentLimit: a 2-segment message passes (would send, NOT drained)", () => {
+  const body = "A".repeat(200); // 200 > 160 → 2 segments
+  assert.equal(segmentInfo(body).segments, 2);
+  assert.equal(withinSegmentLimit(body), true);
+});
+
+test("withinSegmentLimit: a 3-segment message (at the cap) passes", () => {
+  const body = "A".repeat(459); // ceil(459/153) = 3
+  assert.equal(segmentInfo(body).segments, 3);
+  assert.equal(withinSegmentLimit(body), true);
+});
+
+test("withinSegmentLimit: a 4-segment message is OVER the cap → drained (guard fails)", () => {
+  const body = "A".repeat(460); // ceil(460/153) = 4
+  assert.equal(segmentInfo(body).segments, 4);
+  assert.equal(withinSegmentLimit(body), false);
+});
+
+test("withinSegmentLimit: a custom max is honored", () => {
+  const twoSeg = "A".repeat(200);
+  assert.equal(withinSegmentLimit(twoSeg, 1), false);
+  assert.equal(withinSegmentLimit(twoSeg, 2), true);
+});
+
+// ---------------------------------------------------------------------------
 // renderMessage (Talan) — REAL DATA proof (session-6.md Task 0)
 //   Every real contact must render single-segment AND end with the opt-out line.
 //   The longest real addresses must STILL fit with the address (no fallback).
@@ -345,14 +407,14 @@ function loadPilotContacts(): CsvRow[] {
   });
 }
 
-test("renderMessage (Talan): ALL 500 real contacts render single-segment + opt-out line", () => {
+test("renderMessage (Talan): ALL 500 real contacts render WITHIN the segment cap + opt-out line", () => {
   const rows = loadPilotContacts();
   assert.ok(rows.length >= 500, `expected ~500 rows, got ${rows.length}`);
   for (const row of rows) {
     const msg = renderMessage(TALAN, { firstName: row.firstName, zip: row.zip, address: row.address }, BIZ);
     assert.ok(
-      withinSingleSegment(msg),
-      `Row "${row.firstName} / ${row.address}" overflows: ${JSON.stringify(segmentInfo(msg))} — "${msg}"`
+      withinSegmentLimit(msg),
+      `Row "${row.firstName} / ${row.address}" over cap: ${JSON.stringify(segmentInfo(msg))} — "${msg}"`
     );
     assert.ok(
       msg.endsWith("Reply STOP to opt out"),
@@ -361,15 +423,15 @@ test("renderMessage (Talan): ALL 500 real contacts render single-segment + opt-o
   }
 });
 
-test("renderMessage (Talan): the LONGEST real addresses stay single-segment (fallback guarantees it)", () => {
+test("renderMessage (Talan): the LONGEST real addresses stay within the cap (clause kept up to the cap)", () => {
   const rows = loadPilotContacts();
   const longest = [...rows].sort((a, b) => b.address.length - a.address.length).slice(0, 10);
   assert.ok(longest[0].address.length >= 24, `expected a long real address, got "${longest[0].address}"`);
   for (const row of longest) {
     const msg = renderMessage(TALAN, { firstName: row.firstName, zip: row.zip, address: row.address }, BIZ);
     assert.ok(
-      withinSingleSegment(msg),
-      `Longest address row overflowed — ${JSON.stringify(segmentInfo(msg))} — "${msg}"`
+      withinSegmentLimit(msg),
+      `Longest address row over cap — ${JSON.stringify(segmentInfo(msg))} — "${msg}"`
     );
     assert.ok(msg.endsWith("Reply STOP to opt out"), `Missing opt-out line — "${msg}"`);
   }

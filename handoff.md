@@ -15,6 +15,100 @@ client) or if the id is < 100000. Cleanups now also drop `trace_jobs`/`scrub_job
 a destructive live-DB fixture without checking it can't touch a real tenant.**
 
 
+_Last updated: 2026-06-30 (Claude Code — Conversational-AI settings UI (per-client config) + responder
+model swapped off Opus. Branch `build/ai-settings-ui`, PR into `main`. Config surface + model id only —
+no responder/gate/send-path change, so no new agent-team review.)_
+
+## ▶ Conversational-AI settings UI + model swap (2026-06-30) — PR open, NOT merged
+The AI backend shipped OFF in PR #4; this adds the operator UI to configure + enable it per client (the
+piece deferred from that build) and swaps the default model for cost. **CONFIG SURFACE + MODEL ID ONLY —
+the responder logic, the deterministic STOP/"2"/suppression gate, and the send path are UNTOUCHED**
+(front-end + config wiring; no new agent-team review needed).
+- **UI:** new "Conversational AI" section in the client edit form, extracted into
+  `components/client-ai-settings.tsx` so `client-form.tsx` stays under the cap (now 495 lines). Surfaces
+  the **AI auto-reply** toggle (`ai_enabled`) + four free-text fields that only show when it's on:
+  **Services offered** (`ai_services`), **Offer / hook** (`ai_offer`), **Rep name + tone** (`ai_persona`),
+  **Service area** (`ai_location`); GHL-style short helper copy; an inline note that the server also needs
+  `ANTHROPIC_API_KEY` + `AI_RESPONDER_ENABLED`. Minimal-premium styled (token classes; `accent-brand`).
+- **Wiring fix (the non-obvious bit):** the `ai_*` fields already existed on the `Client` type +
+  `updateClientConfig`/`CreateClientInput`, BUT the `PATCH /api/clients` route's `configFromBody` did NOT
+  map them, so they never persisted from a request. Added the five `ai_*` keys to `configFromBody` (+ a
+  `boolOrUndef` helper for `ai_enabled`). Also extended `ClientFormValues`/`EMPTY` (defaults
+  `ai_enabled:false`, the rest null), `cockpit-view.tsx toFormValues` (so Edit prefills the saved values),
+  and the form's submit payload. `ai_enabled` still ships **off** for every client; Talan unaffected.
+- **Model swap:** `lib/ai-client.ts` default `claude-opus-4-8` → **`claude-sonnet-4-6`** (ample for SMS
+  qualification, far cheaper + faster at volume). `claude-haiku-4-5-20251001` noted inline as the cheaper
+  option. The `AI_RESPONDER_MODEL` env override path is unchanged.
+- **Green:** `tsc` clean, `npm run build` green, `npm test` = **314** (unit suite unchanged — config/UI).
+  **Live (Neon DB):** `npm run test:ai` = **20/20** (responder path intact, mocked Claude/Twilio,
+  throwaway client self-cleaned, DB pristine). A scoped self-cleaning acceptance check (not committed)
+  proved the round-trip: `updateClientConfig` persists all five `ai_*` fields → `getClientById` reads them
+  back → `buildSystemPrompt` renders persona/services/offer/location → `ai_enabled` toggles back off.
+  The other live fixtures touch backend logic this change doesn't alter — rerun before merge as usual.
+- **NEXT:** open the PR into `main`; merge after PR #4 (the AI backend) lands. **Operator to enable a
+  client:** set `ANTHROPIC_API_KEY` + `AI_RESPONDER_ENABLED=true` in Vercel (Production) + redeploy, then
+  the client's settings → Conversational AI → fill services/offer/rep/area → toggle on; text the number.
+
+_Earlier handoff entries below._
+
+_Last updated: 2026-06-30 (Claude Code — Follow-up / re-engagement campaigns: re-text a prior
+campaign's non-responders, REUSING the already-traced + already-clean phones (no re-trace, no re-scrub).
+Branch `build/followup-campaigns`, PR into `main`, NOT merged — agent-team reviewed, Critical/High applied.)_
+
+## ▶ Follow-up / re-engagement campaigns (2026-06-30) — PR open, NOT merged
+Re-text a prior campaign's **non-responders** with a new short message, **REUSING the already-traced +
+already-clean phones** — NO re-trace, NO re-scrub, **zero Tracerfy/scrub spend** (the biggest margin
+lever; per `business-and-scaling-plan.md`). Target: Talan's ~4k contacts who got the first text but
+never replied. **Send-path critical** — reuses the EXISTING eligibility / atomic-claim / suppression /
+send path; never re-texts an opted-out/responded/lead/already-followed-up contact.
+- **Audience is a PURE rule (`lib/followup-audience.ts`), unit-tested, single source of truth.** A
+  contact is in the audience IFF: was_sent AND has phone AND not suppressed AND not replied (no inbound
+  from that phone) AND not a lead AND not opted out (client-level `opt_outs`, last-10 — identical to
+  eligibility) AND `prior_followups < maxFollowups`. `lib/followups.ts getFollowupAudienceIds` gathers
+  the per-contact FACTS in ONE SQL query (the `replied`/`is_lead`/`opted_out`/`prior_followups`
+  EXISTS/count subqueries) then applies `selectFollowupAudience` — eligibility is NEVER re-decided in
+  SQL, so there's no second copy of the rule to drift.
+- **Schema:** `campaigns.source_campaign_id` (nullable self-FK; NULL = a normal campaign → all existing
+  campaigns byte-unchanged; surfaced so follow-ups read distinctly) + `campaigns.followup_round` with a
+  partial UNIQUE index `(client_id, source_campaign_id, followup_round)` (the concurrency guard). Both
+  idempotent adds.
+- **Create (`createFollowupCampaign`):** INSERT a campaign (`source_campaign_id` set, `scrub_mode='none'`,
+  status 'ready', `followup_round=N`) + ONE `INSERT … SELECT` that COPIES the source contact's
+  phone/name/address with `skiptrace_status='matched'` + `scrub_status='clean'` + `send_status='not_sent'`
+  + `suppressed=false`. NO Tracerfy/scrub client imported, NO `trace_jobs`/`scrub_jobs` row → ZERO
+  credits. Default cap `DEFAULT_MAX_FOLLOWUPS=1` (operator-overridable to 2 etc.).
+- **Send reuses the existing path** — seeded rows are ordinary not_sent/clean/matched contacts, so
+  `getEligibleContacts` + atomic `claimForSend` + send-window + segment cap apply unchanged. **REVIEW
+  FIX:** for a follow-up campaign the route passes `followUp=true`, and `getEligibleContacts` /
+  `claimForSend` / `getSendProgress` then ALSO re-check opt-out + replied + lead EVERY batch (additive;
+  `followUp` defaults false → normal campaigns byte-identical). So a STOP/reply/lead landing between
+  seed and send still drops the contact. Trace/scrub stages are no-ops (matched/clean excluded;
+  `scrub_mode='none'` passthrough).
+- **API** `app/api/followups` (GET count + preview meta; POST create+seed — operator-only, client-scoped,
+  source-ownership validated). **UI** `components/followup-panel.tsx` on the dashboard (audience count +
+  live `renderMessage` preview + segment count → create + open; operator then runs the normal confirmed
+  pipeline). Follow-up campaigns surface distinctly in the selector (`Follow-up` Badge + `↳`).
+- **GOTCHA:** the default follow-up template carries NO opt-out line — `renderMessage` appends the
+  per-client line (so a STOP-only client never gets a doubled line). Keep follow-up copy within the
+  3-segment cap (the send path drains an over-cap message to 'failed').
+- **NOTE (#15 dependency):** this was speced to build on #15 server-side sending, which is NOT yet merged
+  on `main`. Until it lands, the follow-up drains via the EXISTING client-side pipeline driver (a tab is
+  needed during the send). When #15 merges it drains server-side with NO change to this feature.
+- **Green:** `tsc` clean, `npm run build` green, `npm test` = **314** (+pure audience suite). New
+  **`npm run test:followup`** live-DB fixture (no real sends / no vendor spend) proves: audience
+  exclusions; zero trace/scrub spend (no jobs row) + seeded send-ready; STOP-after-seed AND
+  reply-after-seed excluded + `claimForSend(followUp)` refused; no double-send; idempotent. Requires
+  `DATABASE_URL` — **operator runs `npm run schema` then `npm run test:followup` before merge** (no DB in
+  the build env, so it wasn't run here; it touches only the new column + follow-up paths).
+- **AGENT-TEAM REVIEW DONE (3 read-only reviewers):** no-spend **HOLDS** (no Critical/High); no-double-send
+  + invariants **HOLD**. **1 HIGH fixed** (replied/lead seed-time-only → now re-checked at send via
+  `followUp`). **1 MEDIUM fixed** (concurrent create double-seed → `followup_round` unique index). Logged
+  (no change): dup-phone-divergent-scrub on source (rare, pre-existing); stale DNC on a reused phone is
+  BY DESIGN (no re-scrub; STOP/opt-out still honored); free orphan-job re-ingest from siblings (no spend).
+- **NEXT:** open the PR into `main`; run `test:followup` with Neon creds; review + merge after #15.
+
+_Earlier handoff entries below._
+
 _Last updated: 2026-06-29 (Claude Code — UI/UX overhaul: a minimal-premium neutral design system
 supersedes the "Fresh"/teal R1 look across EVERY screen; accent moved teal→indigo, still a re-themable
 `--brand` token; FRONT-END only.)_

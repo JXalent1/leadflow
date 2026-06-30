@@ -5,7 +5,9 @@
  * Anthropic SDK or need ANTHROPIC_API_KEY — they inject a fake `classify`. The wire module injects
  * THIS implementation in production.
  *
- * Model: claude-opus-4-8 (Anthropic's most capable Opus tier), overridable via AI_RESPONDER_MODEL.
+ * Model: claude-sonnet-4-6 (strong enough for the short SMS-qualification intent read, far cheaper +
+ * faster than Opus for high inbound volume), overridable via AI_RESPONDER_MODEL.
+ * (For even lower cost, claude-haiku-4-5-20251001 is a cheaper option — set AI_RESPONDER_MODEL to it.)
  * The intent read is a short, well-scoped classification, so we run at low effort with a tight
  * max_tokens and a JSON-schema structured output — no streaming needed. The API key is read from
  * env and never logged. A missing key (or any API error) THROWS, which lib/inbound catches to fall
@@ -27,7 +29,8 @@ function getClient(): Anthropic {
 }
 
 function model(): string {
-  return process.env.AI_RESPONDER_MODEL?.trim() || "claude-opus-4-8";
+  // Cheaper + faster than Opus, ample for SMS qualification. claude-haiku-4-5-20251001 is cheaper still.
+  return process.env.AI_RESPONDER_MODEL?.trim() || "claude-sonnet-4-6";
 }
 
 // Structured-output schema. Strings (not nullables) for service/summary keep the schema simple and

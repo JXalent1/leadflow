@@ -17,6 +17,11 @@
 // lives in ONE shared place — lib/send-batch.sendCampaignBatch — called by BOTH this route and the
 // cron. Suppression/eligibility/no-double-send are enforced there and are unchanged.
 //
+// FOLLOW-UP CAMPAIGNS (#18): a campaign with source_campaign_id set is a re-engagement send. For it
+// `followUp` is threaded into eligibility + the atomic claim so a contact who replied / became a
+// lead / opted out AFTER the follow-up was seeded is re-excluded on EVERY batch. The same flag is
+// threaded by the cron drain, so the server-side drive applies the identical re-check.
+//
 // GET   progress JSON: { eligible, sent, pending, in_flight, failed, suppressed, opted_out }.
 
 import { NextResponse } from "next/server";
@@ -58,6 +63,9 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "no_campaign" }, { status: 404 });
     }
     const campaignId = campaign.id;
+    // Follow-up campaigns additionally exclude since-replied / now-lead / opted-out phones at send
+    // (review fix, #18). Normal campaigns: false → eligibility/claim byte-identical to before.
+    const followUp = campaign.source_campaign_id !== null;
 
     const body = await req.json().catch(() => ({}));
 
@@ -66,7 +74,7 @@ export async function POST(req: Request) {
     // here — it just flips the flag the cron reads — so suppression/window/eligibility are untouched.
     if (typeof body.autoSend === "boolean") {
       await setCampaignAutoSend(clientId, campaignId, body.autoSend);
-      const progress = await getSendProgress(clientId, campaignId);
+      const progress = await getSendProgress(clientId, campaignId, followUp);
       return NextResponse.json({
         autoSend: body.autoSend,
         clientId,
@@ -88,7 +96,7 @@ export async function POST(req: Request) {
 
     // ---- Dry run / unconfirmed: report eligible only, never send. ----------------------
     if (dryRun || !confirm) {
-      const eligible = await getEligibleContacts(clientId, { campaignId, limit });
+      const eligible = await getEligibleContacts(clientId, { campaignId, limit, followUp });
       if (dryRun) {
         const variants = activeVariants();
         return NextResponse.json({
@@ -113,7 +121,7 @@ export async function POST(req: Request) {
     }
 
     // ---- Real send of ONE batch through the SHARED path (same as the cron). ------------
-    const result = await sendCampaignBatch({ client, campaignId, limit, note, requestedRunId });
+    const result = await sendCampaignBatch({ client, campaignId, limit, note, requestedRunId, followUp });
     switch (result.kind) {
       case "outside_window":
         return NextResponse.json(
@@ -182,7 +190,11 @@ export async function GET(req: Request) {
     const clientId = resolveClientIdForUser(g.user, requestedClientId(req));
     if (clientId === null) return NextResponse.json({ error: "forbidden" }, { status: 403 });
     const campaign = await resolveCampaignForClient(clientId, campaignIdFromRequest(req));
-    const progress = await getSendProgress(clientId, campaign?.id);
+    const progress = await getSendProgress(
+      clientId,
+      campaign?.id,
+      campaign?.source_campaign_id != null
+    );
     return NextResponse.json(progress);
   } catch (err) {
     console.error("[campaign] progress failed:", err instanceof Error ? err.message : String(err));

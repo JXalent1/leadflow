@@ -8,6 +8,7 @@ import { resolveCampaignForClient, listCampaigns } from "@/lib/campaigns";
 import { requestedClientIdFromSearchParams, campaignIdFromSearchParams } from "@/lib/request-client";
 import DashboardClient from "@/components/dashboard-client";
 import CampaignBar from "@/components/campaign-bar";
+import FollowupPanel from "@/components/followup-panel";
 import AppHeader from "@/components/ui/app-header";
 import Button from "@/components/ui/button";
 import { ArrowLeftIcon, InboxIcon } from "@/components/ui/icons";
@@ -84,6 +85,14 @@ export default async function DashboardPage({
           campaigns={campaigns}
           selectedCampaignId={selectedCampaignId}
         />
+
+        {selectedCampaignId && initial ? (
+          <FollowupPanel
+            clientId={clientId}
+            sourceCampaignId={selectedCampaignId}
+            sourceName={initial.campaignName}
+          />
+        ) : null}
 
         {initialError ? (
           <p className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">

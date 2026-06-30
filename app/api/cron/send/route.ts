@@ -78,6 +78,10 @@ async function drain(): Promise<NextResponse> {
         limit: cronBatchSize(client.send_rate_per_hour),
         note: "cron drain",
         adoptActiveRun: true, // adopt any in-flight run; the atomic claim keeps overlap safe
+        // Follow-up campaigns re-check opt-out + since-replied + now-a-lead on every batch, so the
+        // cron drain excludes a contact who replied/became a lead/opted out after the campaign was
+        // seeded — identical to the operator route. Normal campaigns: false → byte-identical.
+        followUp: t.followUp,
       });
       results.push({ clientId: t.clientId, campaignId: t.campaignId, ...summarize(r) });
     } catch (err) {

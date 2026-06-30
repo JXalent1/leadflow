@@ -24,6 +24,7 @@ import { renderMessage, segmentInfo, optOutInstructionFor } from "@/lib/sms";
 import { parseForwardPhones, isProbablyPhone } from "@/lib/forward-phones";
 import Button from "./ui/button";
 import { Field, Input, Select } from "./ui/field";
+import ClientAiSettings from "./client-ai-settings";
 import { EMPTY, SAMPLE_CONTACT, type ClientFormValues } from "./client-form-defaults";
 
 // Re-exported so existing importers (e.g. cockpit-view) keep importing the type from "./client-form".
@@ -167,6 +168,12 @@ function ClientFormModal({
         // OFF → 0 (never auto-pause); ON → the positive target the operator set. (#16)
         lead_target: autoPauseOn ? Math.max(1, Math.floor(v.lead_target as number)) : 0,
         target_period: v.target_period,
+        // Conversational-AI config — surfaced + persisted via PATCH/POST → updateClientConfig.
+        ai_enabled: v.ai_enabled,
+        ai_services: v.ai_services,
+        ai_offer: v.ai_offer,
+        ai_persona: v.ai_persona,
+        ai_location: v.ai_location,
       };
       let res: Response;
       if (mode === "create") {
@@ -436,6 +443,8 @@ function ClientFormModal({
               </div>
             ) : null}
           </div>
+
+          <ClientAiSettings v={v} set={set} />
 
           {mode === "create" ? (
             <div className="rounded-lg border bg-surface-muted p-4">

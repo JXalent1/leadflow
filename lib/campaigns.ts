@@ -45,7 +45,18 @@ export interface Campaign {
   scrub_mode: ScrubMode;
   /** True while the operator has this campaign actively sending — the cron drains it server-side. */
   auto_send: boolean;
+  /**
+   * If set, this is a FOLLOW-UP campaign seeded from that source campaign's non-responders
+   * (Build: followup-campaigns). NULL = a normal/original campaign. Surfaced so follow-up sends
+   * read distinctly from the original in the operator UI.
+   */
+  source_campaign_id: number | null;
   created_at: string;
+}
+
+/** True when a campaign is a follow-up/re-engagement send (seeded from a source campaign). */
+export function isFollowupCampaign(c: Pick<Campaign, "source_campaign_id">): boolean {
+  return c.source_campaign_id !== null;
 }
 
 /** A campaign joined to its contact count, for the operator's campaign selector. */
@@ -62,6 +73,10 @@ function toCampaign(r: Record<string, unknown>): Campaign {
     message_template: (r.message_template as string | null) ?? null,
     scrub_mode: isScrubMode(r.scrub_mode) ? r.scrub_mode : "vendor",
     auto_send: r.auto_send === true,
+    source_campaign_id:
+      r.source_campaign_id === null || r.source_campaign_id === undefined
+        ? null
+        : Number(r.source_campaign_id),
     created_at: String(r.created_at),
   };
 }
@@ -164,9 +179,11 @@ export async function setCampaignAutoSend(
  * discovers its work from this flag rather than a selected client. A paused client is excluded so
  * pausing a client also halts its server-side sends. Ordered for stable, fair iteration.
  */
-export async function getAutoSendTargets(): Promise<{ clientId: number; campaignId: number }[]> {
+export async function getAutoSendTargets(): Promise<
+  { clientId: number; campaignId: number; followUp: boolean }[]
+> {
   const rows = await sql`
-    SELECT cm.client_id, cm.id AS campaign_id
+    SELECT cm.client_id, cm.id AS campaign_id, cm.source_campaign_id
     FROM campaigns cm
     JOIN clients cl ON cl.id = cm.client_id
     WHERE cm.auto_send = true AND cl.status = 'active'
@@ -175,6 +192,8 @@ export async function getAutoSendTargets(): Promise<{ clientId: number; campaign
   return (rows as Record<string, unknown>[]).map((r) => ({
     clientId: Number(r.client_id),
     campaignId: Number(r.campaign_id),
+    // A follow-up campaign drains with the since-replied/lead/opt-out re-check on every batch.
+    followUp: r.source_campaign_id !== null && r.source_campaign_id !== undefined,
   }));
 }
 

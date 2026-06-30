@@ -93,12 +93,38 @@ ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS scrub_mode text NOT NULL DEFAULT 
 
 -- Server-side sender (2026-06-30): auto_send is the persistent "the operator wants this campaign
 -- actively sending" flag the per-minute cron (/api/cron/send) reads to know which campaigns to
--- drive WITHOUT a browser. The dashboard Run button sets it true (Pause sets it false); the send
+-- drive WITHOUT a browser. The dashboard Run button sets it true (Pause sets it false) and the send
 -- path clears it once the eligible set genuinely drains. It is NOT a safety control -- no-double-send,
 -- the send window, opt-out/suppression and eligibility are unchanged and gate every batch regardless.
 -- Idempotent: existing rows backfill to false (no campaign auto-sends until the operator opts in).
 ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS auto_send boolean NOT NULL DEFAULT false;
 CREATE INDEX IF NOT EXISTS idx_campaigns_auto_send ON campaigns(auto_send) WHERE auto_send = true;
+
+-- Follow-up / re-engagement campaigns (Build: followup-campaigns, 2026-06-30). A follow-up campaign
+-- re-texts a PRIOR campaign's non-responders, REUSING their already-traced + already-clean phones
+-- (NO re-trace, NO re-scrub, no vendor spend -- that reuse is the whole margin point). source_campaign_id
+-- points at the campaign the follow-up audience was drawn from. NULL = a normal/original campaign
+-- (today's behavior, unchanged). A follow-up campaign's contacts are seeded straight to send-ready by
+-- copying the source contact's phone with skiptrace_status='matched' + scrub_status='clean', then they
+-- flow through the EXISTING eligibility/claim/send path unchanged. The follow-up cap per phone is
+-- derived from how many follow-up campaigns (source_campaign_id IS NOT NULL) already contain that phone,
+-- so re-running an audience is idempotent. Idempotent column add. Talan (client 1) existing campaigns
+-- keep source_campaign_id NULL so they stay byte-unchanged.
+-- NOTE: no statement-separator character may appear in this comment block (apply-schema splits on it).
+ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS source_campaign_id int REFERENCES campaigns(id);
+CREATE INDEX IF NOT EXISTS idx_campaigns_source ON campaigns(source_campaign_id);
+
+-- followup_round is the Nth follow-up to a given source (1, 2, …). It exists ONLY to make follow-up
+-- creation safe under concurrency (review fix): two simultaneous create requests both read the same
+-- prior_followups and would otherwise each seed the same phones into two campaigns (a double-text).
+-- The partial unique index below forbids two follow-up campaigns sharing (client, source, round), so
+-- the racing loser fails its INSERT (no contacts seeded) instead of double-seeding — while still
+-- allowing legitimate sequential rounds (round 1, round 2 under a cap of 2). NULL for normal campaigns.
+-- NOTE: no statement-separator character may appear in this comment block (apply-schema splits on it).
+ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS followup_round int;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_campaigns_followup_round
+  ON campaigns(client_id, source_campaign_id, followup_round)
+  WHERE source_campaign_id IS NOT NULL;
 
 -- ===========================================================================
 -- v2 PER-CLIENT OPT-OUT KEYWORD (2nd-client onboarding, 2026-06-27)

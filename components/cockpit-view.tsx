@@ -47,6 +47,11 @@ function toFormValues(c: Client): ClientFormValues {
     lead_guarantee: c.lead_guarantee,
     lead_target: c.lead_target,
     target_period: c.target_period,
+    ai_enabled: c.ai_enabled,
+    ai_services: c.ai_services,
+    ai_offer: c.ai_offer,
+    ai_persona: c.ai_persona,
+    ai_location: c.ai_location,
   };
 }
 

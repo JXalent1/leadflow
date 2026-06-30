@@ -99,7 +99,7 @@ export async function getDashboardData(client: Client, campaign: Campaign): Prom
   const [contactCounts, progress, extra, recentLeads, inbound, recentOptOuts, activeRun, campaigns, targetStatus] =
     await Promise.all([
       getContactCounts(clientId, campaignId),
-      getSendProgress(clientId, campaignId),
+      getSendProgress(clientId, campaignId, campaign.source_campaign_id !== null),
       getDashboardExtraCounts(clientId, campaignId),
       getRecentLeads(clientId, campaignId, 50),
       getRecentInbound(clientId, campaignId, 50),

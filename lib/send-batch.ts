@@ -112,6 +112,14 @@ export interface SendBatchOptions {
   /** The run id a browser driver is continuing (route only); ignored by the cron. */
   requestedRunId?: number;
   /**
+   * Follow-up campaign? When true, eligibility + the atomic claim ADDITIONALLY exclude any contact
+   * who has since replied, become a lead, or opted out — re-checked EVERY batch so a reply/lead/STOP
+   * landing after the follow-up was seeded still drops the contact. Defaults false → a normal
+   * campaign's eligibility/claim are byte-identical to before. Threaded through identically by BOTH
+   * the operator route and the cron drain (review fix, #18).
+   */
+  followUp?: boolean;
+  /**
    * Cron mode: adopt whatever run is currently active instead of returning "already_running".
    * Safe because the atomic per-contact claim — not this guard — is the no-double-send guarantee.
    */
@@ -160,7 +168,15 @@ export type SendBatchResult =
  * The caller is responsible for any auth + confirm gate BEFORE calling this.
  */
 export async function sendCampaignBatch(opts: SendBatchOptions): Promise<SendBatchResult> {
-  const { client, campaignId, limit, note, requestedRunId, adoptActiveRun = false } = opts;
+  const {
+    client,
+    campaignId,
+    limit,
+    note,
+    requestedRunId,
+    adoptActiveRun = false,
+    followUp = false,
+  } = opts;
   const now = opts.now ?? new Date();
   const clientId = client.id;
   const window = clientWindow(client);
@@ -201,7 +217,7 @@ export async function sendCampaignBatch(opts: SendBatchOptions): Promise<SendBat
     };
   }
 
-  const eligible = await getEligibleContacts(clientId, { campaignId, limit });
+  const eligible = await getEligibleContacts(clientId, { campaignId, limit, followUp });
 
   let runId: number;
   if (active) {
@@ -231,12 +247,12 @@ export async function sendCampaignBatch(opts: SendBatchOptions): Promise<SendBat
   const delay = pacingDelayMs(client.send_rate_per_hour);
   let runClosed = false;
   try {
-    const result = await runSend(client, eligible, variants, delay);
+    const result = await runSend(client, eligible, variants, delay, followUp);
 
     // Are there still eligible contacts after this batch? (Cheap indexed probe — same predicate.)
     const remaining = result.stoppedForWindow
       ? 1 // window closed mid-batch — stop now; leave the rest for a later resume
-      : (await getEligibleContacts(clientId, { campaignId, limit: 1 })).length;
+      : (await getEligibleContacts(clientId, { campaignId, limit: 1, followUp })).length;
     const done = result.stoppedForWindow || remaining === 0;
 
     if (done) {
@@ -294,7 +310,8 @@ async function runSend(
   client: Client,
   eligible: Contact[],
   variants: Variant[],
-  delayMs: number
+  delayMs: number,
+  followUp = false
 ): Promise<RunResult> {
   const clientId = client.id;
   const biz = clientBizName(client);
@@ -340,13 +357,14 @@ async function runSend(
     if (!withinSegmentLimit(body)) {
       r.skippedOverflow++;
       console.warn(`[campaign] over segment cap (>${MAX_MESSAGE_SEGMENTS}) contact=${c.id} variant=${variant} len=${body.length} segs=${segmentInfo(body).segments} -> failed`);
-      if (await claimForSend(clientId, c.id)) await setSendStatus(clientId, c.id, "failed");
+      if (await claimForSend(clientId, c.id, followUp)) await setSendStatus(clientId, c.id, "failed");
       continue;
     }
 
     // Atomic claim: only proceed if THIS run flipped not_sent -> sending.
-    // Guarantees no double-text under crash or concurrent re-run.
-    const claimed = await claimForSend(clientId, c.id);
+    // Guarantees no double-text under crash or concurrent re-run. For follow-ups the claim ALSO
+    // re-checks replied/lead/opt-out, so a reply landing mid-batch keeps the contact from being texted.
+    const claimed = await claimForSend(clientId, c.id, followUp);
     if (!claimed) {
       r.skippedClaimed++;
       continue;

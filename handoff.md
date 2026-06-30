@@ -15,6 +15,42 @@ client) or if the id is < 100000. Cleanups now also drop `trace_jobs`/`scrub_job
 a destructive live-DB fixture without checking it can't touch a real tenant.**
 
 
+_Last updated: 2026-06-30 (Claude Code — Conversational-AI settings UI (per-client config) + responder
+model swapped off Opus. Branch `build/ai-settings-ui`, PR into `main`. Config surface + model id only —
+no responder/gate/send-path change, so no new agent-team review.)_
+
+## ▶ Conversational-AI settings UI + model swap (2026-06-30) — PR open, NOT merged
+The AI backend shipped OFF in PR #4; this adds the operator UI to configure + enable it per client (the
+piece deferred from that build) and swaps the default model for cost. **CONFIG SURFACE + MODEL ID ONLY —
+the responder logic, the deterministic STOP/"2"/suppression gate, and the send path are UNTOUCHED**
+(front-end + config wiring; no new agent-team review needed).
+- **UI:** new "Conversational AI" section in the client edit form, extracted into
+  `components/client-ai-settings.tsx` so `client-form.tsx` stays under the cap (now 495 lines). Surfaces
+  the **AI auto-reply** toggle (`ai_enabled`) + four free-text fields that only show when it's on:
+  **Services offered** (`ai_services`), **Offer / hook** (`ai_offer`), **Rep name + tone** (`ai_persona`),
+  **Service area** (`ai_location`); GHL-style short helper copy; an inline note that the server also needs
+  `ANTHROPIC_API_KEY` + `AI_RESPONDER_ENABLED`. Minimal-premium styled (token classes; `accent-brand`).
+- **Wiring fix (the non-obvious bit):** the `ai_*` fields already existed on the `Client` type +
+  `updateClientConfig`/`CreateClientInput`, BUT the `PATCH /api/clients` route's `configFromBody` did NOT
+  map them, so they never persisted from a request. Added the five `ai_*` keys to `configFromBody` (+ a
+  `boolOrUndef` helper for `ai_enabled`). Also extended `ClientFormValues`/`EMPTY` (defaults
+  `ai_enabled:false`, the rest null), `cockpit-view.tsx toFormValues` (so Edit prefills the saved values),
+  and the form's submit payload. `ai_enabled` still ships **off** for every client; Talan unaffected.
+- **Model swap:** `lib/ai-client.ts` default `claude-opus-4-8` → **`claude-sonnet-4-6`** (ample for SMS
+  qualification, far cheaper + faster at volume). `claude-haiku-4-5-20251001` noted inline as the cheaper
+  option. The `AI_RESPONDER_MODEL` env override path is unchanged.
+- **Green:** `tsc` clean, `npm run build` green, `npm test` = **314** (unit suite unchanged — config/UI).
+  **Live (Neon DB):** `npm run test:ai` = **20/20** (responder path intact, mocked Claude/Twilio,
+  throwaway client self-cleaned, DB pristine). A scoped self-cleaning acceptance check (not committed)
+  proved the round-trip: `updateClientConfig` persists all five `ai_*` fields → `getClientById` reads them
+  back → `buildSystemPrompt` renders persona/services/offer/location → `ai_enabled` toggles back off.
+  The other live fixtures touch backend logic this change doesn't alter — rerun before merge as usual.
+- **NEXT:** open the PR into `main`; merge after PR #4 (the AI backend) lands. **Operator to enable a
+  client:** set `ANTHROPIC_API_KEY` + `AI_RESPONDER_ENABLED=true` in Vercel (Production) + redeploy, then
+  the client's settings → Conversational AI → fill services/offer/rep/area → toggle on; text the number.
+
+_Earlier handoff entries below._
+
 _Last updated: 2026-06-30 (Claude Code — Follow-up / re-engagement campaigns: re-text a prior
 campaign's non-responders, REUSING the already-traced + already-clean phones (no re-trace, no re-scrub).
 Branch `build/followup-campaigns`, PR into `main`, NOT merged — agent-team reviewed, Critical/High applied.)_

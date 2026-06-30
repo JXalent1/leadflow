@@ -24,6 +24,13 @@ export interface ClientFormValues {
   lead_guarantee: number;
   lead_target: number | null;
   target_period: string; // 'week' | 'month'
+  // Conversational-AI responder config. ai_enabled flips the auto-reply on for this client; the
+  // ai_* text fields shape the system prompt (lib/ai-responder.ts buildSystemPrompt).
+  ai_enabled: boolean;
+  ai_services: string | null;
+  ai_offer: string | null;
+  ai_persona: string | null;
+  ai_location: string | null;
 }
 
 export const POWERWASH_TEMPLATE =
@@ -48,6 +55,12 @@ export const EMPTY: ClientFormValues = {
   lead_guarantee: 50,
   lead_target: 0,
   target_period: "month",
+  // Conversational AI ships OFF — the operator turns it on per client in the form.
+  ai_enabled: false,
+  ai_services: null,
+  ai_offer: null,
+  ai_persona: null,
+  ai_location: null,
 };
 
 export const SAMPLE_CONTACT = { firstName: "Chris", zip: "32801", address: "1424 EDGEWATER DR" };

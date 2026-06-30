@@ -45,6 +45,14 @@ function period(v: unknown): "week" | "month" | undefined {
   return v === "week" || v === "month" ? v : undefined;
 }
 
+/** A boolean from a JSON bool or "true"/"false" string; undefined otherwise (field omitted). */
+function boolOrUndef(v: unknown): boolean | undefined {
+  if (typeof v === "boolean") return v;
+  if (v === "true") return true;
+  if (v === "false") return false;
+  return undefined;
+}
+
 /** Map the request body to the shared client-config shape (nullable text → null, numbers coerced). */
 function configFromBody(body: Record<string, unknown>) {
   return {
@@ -65,6 +73,13 @@ function configFromBody(body: Record<string, unknown>) {
     target_period: period(body.target_period),
     plan_amount_cents: numOrUndef(body.plan_amount_cents),
     billing_day: body.billing_day === null ? null : numOrUndef(body.billing_day),
+    // Conversational-AI config (surfaced by components/client-ai-settings.tsx). These only write the
+    // client config row — they never weaken the deterministic STOP/keyword/suppression gate.
+    ai_enabled: boolOrUndef(body.ai_enabled),
+    ai_services: strOrNull(body.ai_services),
+    ai_offer: strOrNull(body.ai_offer),
+    ai_persona: strOrNull(body.ai_persona),
+    ai_location: strOrNull(body.ai_location),
   };
 }
 

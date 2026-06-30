@@ -58,6 +58,14 @@ export type MessageDirection = "outbound" | "inbound";
 export interface ContactScope {
   campaignId?: number;
   limit?: number;
+  /**
+   * Follow-up campaigns ONLY (Build: followup-campaigns; added in the review). When true, eligibility
+   * ALSO excludes any phone that has since REPLIED (an inbound message) or become a LEAD — re-checked
+   * every batch, exactly as opt-outs are. This closes the seed→send window where a contact seeded as a
+   * non-responder replies/becomes a lead before the send runs. Default false → byte-identical for
+   * normal campaigns (the extra clause short-circuits to a no-op).
+   */
+  followUp?: boolean;
 }
 
 // ---- Helpers ---------------------------------------------------------------
@@ -81,7 +89,7 @@ export async function getEligibleContacts(
   clientId: number,
   scope: ContactScope = {}
 ): Promise<Contact[]> {
-  const { campaignId, limit } = scope;
+  const { campaignId, limit, followUp = false } = scope;
   const rows = await sql`
     SELECT * FROM contacts c
     WHERE c.client_id = ${clientId}
@@ -96,6 +104,22 @@ export async function getEligibleContacts(
           AND right(regexp_replace(o.phone, '[^0-9]', '', 'g'), 10)
             = right(regexp_replace(c.phone, '[^0-9]', '', 'g'), 10)
       )
+      AND (${followUp}::boolean = false OR (
+        -- Follow-up only: never re-text a phone that has since replied or become a lead. Re-checked
+        -- every batch (like opt-outs), so a reply landing after seeding still drops the contact.
+        NOT EXISTS (
+          SELECT 1 FROM messages m JOIN contacts mc ON mc.id = m.contact_id
+          WHERE m.client_id = c.client_id AND m.direction = 'inbound' AND mc.phone IS NOT NULL
+            AND right(regexp_replace(mc.phone, '[^0-9]', '', 'g'), 10)
+              = right(regexp_replace(c.phone, '[^0-9]', '', 'g'), 10)
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM leads l JOIN contacts lc ON lc.id = l.contact_id
+          WHERE l.client_id = c.client_id AND lc.phone IS NOT NULL
+            AND right(regexp_replace(lc.phone, '[^0-9]', '', 'g'), 10)
+              = right(regexp_replace(c.phone, '[^0-9]', '', 'g'), 10)
+        )
+      ))
     ORDER BY c.id
     LIMIT ${limit ?? null}
   `;
@@ -124,7 +148,11 @@ export async function setScrubStatus(
  * race window between getEligibleContacts and this claim mid-run, the row won't be claimed and the
  * contact is never texted. The eligibility query is the primary gate; this closes the TOCTOU race.
  */
-export async function claimForSend(clientId: number, id: number): Promise<boolean> {
+export async function claimForSend(
+  clientId: number,
+  id: number,
+  followUp = false
+): Promise<boolean> {
   const rows = await sql`
     UPDATE contacts
     SET send_status = 'sending'
@@ -135,6 +163,22 @@ export async function claimForSend(clientId: number, id: number): Promise<boolea
           AND right(regexp_replace(o.phone, '[^0-9]', '', 'g'), 10)
             = right(regexp_replace(contacts.phone, '[^0-9]', '', 'g'), 10)
       )
+      AND (${followUp}::boolean = false OR (
+        -- Follow-up only (review fix): close the TOCTOU where a reply/lead lands between
+        -- getEligibleContacts and this claim — re-check replied + lead at claim time too.
+        NOT EXISTS (
+          SELECT 1 FROM messages m JOIN contacts mc ON mc.id = m.contact_id
+          WHERE m.client_id = contacts.client_id AND m.direction = 'inbound' AND mc.phone IS NOT NULL
+            AND right(regexp_replace(mc.phone, '[^0-9]', '', 'g'), 10)
+              = right(regexp_replace(contacts.phone, '[^0-9]', '', 'g'), 10)
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM leads l JOIN contacts lc ON lc.id = l.contact_id
+          WHERE l.client_id = contacts.client_id AND lc.phone IS NOT NULL
+            AND right(regexp_replace(lc.phone, '[^0-9]', '', 'g'), 10)
+              = right(regexp_replace(contacts.phone, '[^0-9]', '', 'g'), 10)
+        )
+      ))
     RETURNING id
   `;
   return rows.length > 0;
@@ -163,7 +207,8 @@ export async function setSendStatus(
  */
 export async function getSendProgress(
   clientId: number,
-  campaignId?: number
+  campaignId?: number,
+  followUp = false
 ): Promise<{
   eligible: number;
   sent: number;
@@ -194,7 +239,23 @@ export async function getSendProgress(
              WHERE o.client_id = c.client_id
                AND right(regexp_replace(o.phone, '[^0-9]', '', 'g'), 10)
                  = right(regexp_replace(c.phone, '[^0-9]', '', 'g'), 10)
-           )) AS is_eligible
+           )
+           -- Follow-up only: a since-replied / now-lead phone is NOT eligible, so the "pending" count
+           -- mirrors what the follow-up send will actually attempt (no phantom never-draining pending).
+           AND (${followUp}::boolean = false OR (
+             NOT EXISTS (
+               SELECT 1 FROM messages m JOIN contacts mc ON mc.id = m.contact_id
+               WHERE m.client_id = c.client_id AND m.direction = 'inbound' AND mc.phone IS NOT NULL
+                 AND right(regexp_replace(mc.phone, '[^0-9]', '', 'g'), 10)
+                   = right(regexp_replace(c.phone, '[^0-9]', '', 'g'), 10)
+             )
+             AND NOT EXISTS (
+               SELECT 1 FROM leads l JOIN contacts lc ON lc.id = l.contact_id
+               WHERE l.client_id = c.client_id AND lc.phone IS NOT NULL
+                 AND right(regexp_replace(lc.phone, '[^0-9]', '', 'g'), 10)
+                   = right(regexp_replace(c.phone, '[^0-9]', '', 'g'), 10)
+             )
+           ))) AS is_eligible
       FROM contacts c
       WHERE c.client_id = ${clientId}
         AND (${campaignId ?? null}::int IS NULL OR c.campaign_id = ${campaignId ?? null}::int)

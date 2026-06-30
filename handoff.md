@@ -15,6 +15,64 @@ client) or if the id is < 100000. Cleanups now also drop `trace_jobs`/`scrub_job
 a destructive live-DB fixture without checking it can't touch a real tenant.**
 
 
+_Last updated: 2026-06-30 (Claude Code — Follow-up / re-engagement campaigns: re-text a prior
+campaign's non-responders, REUSING the already-traced + already-clean phones (no re-trace, no re-scrub).
+Branch `build/followup-campaigns`, PR into `main`, NOT merged — agent-team reviewed, Critical/High applied.)_
+
+## ▶ Follow-up / re-engagement campaigns (2026-06-30) — PR open, NOT merged
+Re-text a prior campaign's **non-responders** with a new short message, **REUSING the already-traced +
+already-clean phones** — NO re-trace, NO re-scrub, **zero Tracerfy/scrub spend** (the biggest margin
+lever; per `business-and-scaling-plan.md`). Target: Talan's ~4k contacts who got the first text but
+never replied. **Send-path critical** — reuses the EXISTING eligibility / atomic-claim / suppression /
+send path; never re-texts an opted-out/responded/lead/already-followed-up contact.
+- **Audience is a PURE rule (`lib/followup-audience.ts`), unit-tested, single source of truth.** A
+  contact is in the audience IFF: was_sent AND has phone AND not suppressed AND not replied (no inbound
+  from that phone) AND not a lead AND not opted out (client-level `opt_outs`, last-10 — identical to
+  eligibility) AND `prior_followups < maxFollowups`. `lib/followups.ts getFollowupAudienceIds` gathers
+  the per-contact FACTS in ONE SQL query (the `replied`/`is_lead`/`opted_out`/`prior_followups`
+  EXISTS/count subqueries) then applies `selectFollowupAudience` — eligibility is NEVER re-decided in
+  SQL, so there's no second copy of the rule to drift.
+- **Schema:** `campaigns.source_campaign_id` (nullable self-FK; NULL = a normal campaign → all existing
+  campaigns byte-unchanged; surfaced so follow-ups read distinctly) + `campaigns.followup_round` with a
+  partial UNIQUE index `(client_id, source_campaign_id, followup_round)` (the concurrency guard). Both
+  idempotent adds.
+- **Create (`createFollowupCampaign`):** INSERT a campaign (`source_campaign_id` set, `scrub_mode='none'`,
+  status 'ready', `followup_round=N`) + ONE `INSERT … SELECT` that COPIES the source contact's
+  phone/name/address with `skiptrace_status='matched'` + `scrub_status='clean'` + `send_status='not_sent'`
+  + `suppressed=false`. NO Tracerfy/scrub client imported, NO `trace_jobs`/`scrub_jobs` row → ZERO
+  credits. Default cap `DEFAULT_MAX_FOLLOWUPS=1` (operator-overridable to 2 etc.).
+- **Send reuses the existing path** — seeded rows are ordinary not_sent/clean/matched contacts, so
+  `getEligibleContacts` + atomic `claimForSend` + send-window + segment cap apply unchanged. **REVIEW
+  FIX:** for a follow-up campaign the route passes `followUp=true`, and `getEligibleContacts` /
+  `claimForSend` / `getSendProgress` then ALSO re-check opt-out + replied + lead EVERY batch (additive;
+  `followUp` defaults false → normal campaigns byte-identical). So a STOP/reply/lead landing between
+  seed and send still drops the contact. Trace/scrub stages are no-ops (matched/clean excluded;
+  `scrub_mode='none'` passthrough).
+- **API** `app/api/followups` (GET count + preview meta; POST create+seed — operator-only, client-scoped,
+  source-ownership validated). **UI** `components/followup-panel.tsx` on the dashboard (audience count +
+  live `renderMessage` preview + segment count → create + open; operator then runs the normal confirmed
+  pipeline). Follow-up campaigns surface distinctly in the selector (`Follow-up` Badge + `↳`).
+- **GOTCHA:** the default follow-up template carries NO opt-out line — `renderMessage` appends the
+  per-client line (so a STOP-only client never gets a doubled line). Keep follow-up copy within the
+  3-segment cap (the send path drains an over-cap message to 'failed').
+- **NOTE (#15 dependency):** this was speced to build on #15 server-side sending, which is NOT yet merged
+  on `main`. Until it lands, the follow-up drains via the EXISTING client-side pipeline driver (a tab is
+  needed during the send). When #15 merges it drains server-side with NO change to this feature.
+- **Green:** `tsc` clean, `npm run build` green, `npm test` = **314** (+pure audience suite). New
+  **`npm run test:followup`** live-DB fixture (no real sends / no vendor spend) proves: audience
+  exclusions; zero trace/scrub spend (no jobs row) + seeded send-ready; STOP-after-seed AND
+  reply-after-seed excluded + `claimForSend(followUp)` refused; no double-send; idempotent. Requires
+  `DATABASE_URL` — **operator runs `npm run schema` then `npm run test:followup` before merge** (no DB in
+  the build env, so it wasn't run here; it touches only the new column + follow-up paths).
+- **AGENT-TEAM REVIEW DONE (3 read-only reviewers):** no-spend **HOLDS** (no Critical/High); no-double-send
+  + invariants **HOLD**. **1 HIGH fixed** (replied/lead seed-time-only → now re-checked at send via
+  `followUp`). **1 MEDIUM fixed** (concurrent create double-seed → `followup_round` unique index). Logged
+  (no change): dup-phone-divergent-scrub on source (rare, pre-existing); stale DNC on a reused phone is
+  BY DESIGN (no re-scrub; STOP/opt-out still honored); free orphan-job re-ingest from siblings (no spend).
+- **NEXT:** open the PR into `main`; run `test:followup` with Neon creds; review + merge after #15.
+
+_Earlier handoff entries below._
+
 _Last updated: 2026-06-29 (Claude Code — UI/UX overhaul: a minimal-premium neutral design system
 supersedes the "Fresh"/teal R1 look across EVERY screen; accent moved teal→indigo, still a re-themable
 `--brand` token; FRONT-END only.)_

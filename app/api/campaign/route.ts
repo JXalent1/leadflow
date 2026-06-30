@@ -124,6 +124,9 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "no_campaign" }, { status: 404 });
     }
     const campaignId = campaign.id;
+    // Follow-up campaigns additionally exclude since-replied / now-lead phones at send (review fix).
+    // Normal campaigns: false → eligibility/claim byte-identical to before.
+    const followUp = campaign.source_campaign_id !== null;
 
     const body = await req.json().catch(() => ({}));
     const dryRun = body.dryRun === true;
@@ -137,7 +140,7 @@ export async function POST(req: Request) {
         : undefined;
 
     const variants = activeVariants();
-    const eligible = await getEligibleContacts(clientId, { campaignId, limit });
+    const eligible = await getEligibleContacts(clientId, { campaignId, limit, followUp });
 
     // ---- Dry run: report only, never send. -------------------------------
     if (dryRun) {
@@ -255,14 +258,14 @@ export async function POST(req: Request) {
     const delay = pacingDelayMs(client.send_rate_per_hour);
     let runClosed = false;
     try {
-      const result = await runSend(client, eligible, variants, delay);
+      const result = await runSend(client, eligible, variants, delay, followUp);
 
       // Are there still eligible contacts after this batch? (Cheap indexed probe — same predicate.)
       // The run closes (finished_at) ONLY when nothing remains, or the window shut mid-batch; until
       // then it stays open + heartbeated so it keeps representing the ongoing drive.
       const remaining = result.stoppedForWindow
         ? 1 // window closed mid-batch — stop now; leave the rest for a later resume
-        : (await getEligibleContacts(clientId, { campaignId, limit: 1 })).length;
+        : (await getEligibleContacts(clientId, { campaignId, limit: 1, followUp })).length;
       const done = result.stoppedForWindow || remaining === 0;
 
       if (done) {
@@ -336,7 +339,8 @@ async function runSend(
   client: Client,
   eligible: Contact[],
   variants: Variant[],
-  delayMs: number
+  delayMs: number,
+  followUp = false
 ): Promise<RunResult> {
   const clientId = client.id;
   const biz = clientBizName(client);
@@ -382,13 +386,14 @@ async function runSend(
     if (!withinSegmentLimit(body)) {
       r.skippedOverflow++;
       console.warn(`[campaign] over segment cap (>${MAX_MESSAGE_SEGMENTS}) contact=${c.id} variant=${variant} len=${body.length} segs=${segmentInfo(body).segments} -> failed`);
-      if (await claimForSend(clientId, c.id)) await setSendStatus(clientId, c.id, "failed");
+      if (await claimForSend(clientId, c.id, followUp)) await setSendStatus(clientId, c.id, "failed");
       continue;
     }
 
     // Atomic claim: only proceed if THIS run flipped not_sent -> sending.
-    // Guarantees no double-text under crash or concurrent re-run.
-    const claimed = await claimForSend(clientId, c.id);
+    // Guarantees no double-text under crash or concurrent re-run. For follow-ups the claim ALSO
+    // re-checks replied/lead, so a reply landing mid-batch keeps the contact from being texted.
+    const claimed = await claimForSend(clientId, c.id, followUp);
     if (!claimed) {
       r.skippedClaimed++;
       continue;
@@ -446,7 +451,11 @@ export async function GET(req: Request) {
     const clientId = resolveClientIdForUser(g.user, requestedClientId(req));
     if (clientId === null) return NextResponse.json({ error: "forbidden" }, { status: 403 });
     const campaign = await resolveCampaignForClient(clientId, campaignIdFromRequest(req));
-    const progress = await getSendProgress(clientId, campaign?.id);
+    const progress = await getSendProgress(
+      clientId,
+      campaign?.id,
+      campaign?.source_campaign_id != null
+    );
     return NextResponse.json(progress);
   } catch (err) {
     console.error("[campaign] progress failed:", err instanceof Error ? err.message : String(err));

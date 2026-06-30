@@ -103,11 +103,16 @@ export default function CampaignBar({ clientId, campaigns, selectedCampaignId }:
             >
               {campaigns.map((c) => (
                 <option key={c.id} value={c.id}>
+                  {c.source_campaign_id !== null ? "↳ " : ""}
                   {c.name} · {c.contact_count} contacts · {c.status}
+                  {c.source_campaign_id !== null ? " · follow-up" : ""}
                   {c.scrub_mode === "none" ? " · no scrub" : ""}
                 </option>
               ))}
             </Select>
+            {selected?.source_campaign_id !== null && selected ? (
+              <Badge tone="brand">Follow-up</Badge>
+            ) : null}
             {selected ? modeBadge(selected.scrub_mode) : null}
           </>
         ) : (

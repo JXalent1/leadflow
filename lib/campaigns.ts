@@ -43,7 +43,18 @@ export interface Campaign {
   status: string;
   message_template: string | null;
   scrub_mode: ScrubMode;
+  /**
+   * If set, this is a FOLLOW-UP campaign seeded from that source campaign's non-responders
+   * (Build: followup-campaigns). NULL = a normal/original campaign. Surfaced so follow-up sends
+   * read distinctly from the original in the operator UI.
+   */
+  source_campaign_id: number | null;
   created_at: string;
+}
+
+/** True when a campaign is a follow-up/re-engagement send (seeded from a source campaign). */
+export function isFollowupCampaign(c: Pick<Campaign, "source_campaign_id">): boolean {
+  return c.source_campaign_id !== null;
 }
 
 /** A campaign joined to its contact count, for the operator's campaign selector. */
@@ -59,6 +70,10 @@ function toCampaign(r: Record<string, unknown>): Campaign {
     status: String(r.status),
     message_template: (r.message_template as string | null) ?? null,
     scrub_mode: isScrubMode(r.scrub_mode) ? r.scrub_mode : "vendor",
+    source_campaign_id:
+      r.source_campaign_id === null || r.source_campaign_id === undefined
+        ? null
+        : Number(r.source_campaign_id),
     created_at: String(r.created_at),
   };
 }

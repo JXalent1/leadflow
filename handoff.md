@@ -58,10 +58,28 @@ UI-overhaul stream; until then the operator flips `clients.ai_enabled` via `upda
   `processInbound` wiring). New **`npm run test:ai`** live-DB fixture (MOCKED Claude + Twilio — no spend,
   no sends; uses `createClient` for a throwaway tenant, deletes only what it created). Not run locally
   (no DB creds in this session) — the operator runs it after `npm run schema`.
-- **NEXT:** run the **agent-team review** (3 read-only reviewers — compliance / correctness / security)
-  challenging (1) can-never-text-opted-out, (2) stored-phone-only, (3) no-crash/no-double-send. Apply
-  Critical/High, re-verify green, THEN merge the PR. Operator sets `ANTHROPIC_API_KEY` +
-  `AI_RESPONDER_ENABLED` in Vercel; `ai_enabled` stays OFF until a client opts in.
+- **REVIEW DONE (3 read-only reviewers — compliance / correctness / security):**
+  - **Security:** claim holds (stored-phone-only, model can't control the destination, no secrets
+    logged, multi-tenant scoped). 1 Low — the model-generated `summary` is the body of the operator
+    ping (operator already receives the lead's reply text; can't change the `to` or reach the prospect). Logged.
+  - **Compliance:** hard "never *texts* an opted-out contact" holds (the `sendReply` gate fail-closes).
+    Medium — the AI was still *invoked* (and could create/forward a lead) for a PRE-EXISTING opt-out.
+    **FIXED:** `runAiResponder` now short-circuits on `input.suppressed` → returns null → defers to the
+    keyword path; the wire computes `suppressed` from the freshest `getContactById`+`isPhoneOptedOut`.
+    So the AI literally never runs on an opted-out contact (+ saves a Claude call). Low TOCTOU logged.
+  - **Correctness — 1 HIGH, FIXED:** a post-commit throw (`markHandedOff`/`sendReply` raw `sql`) in the
+    qualified branch propagated to `processInbound`'s catch → keyword fallback → **duplicate lead +
+    forward in one request**. **FIX:** the pure core wraps EVERY post-decision effect in `safe()`
+    (logs + continues); only a pre-side-effect `classify` throw propagates. Once the lead is created
+    the outcome stays `ai_lead`, so the caller never falls back. Engaged-branch `sendReply` errors are
+    swallowed too (no spurious keyword lead). Logged: handoff-durability degrades to baseline
+    keyword behavior (already multi-lead-per-inbound); pre-existing keyword lost-lead on a crash
+    between log-commit and lead-commit. Dedupe gate / single-reply / turn-cap (exactly 5) all solid.
+  - Re-verified: `tsc`/build green, `npm test` = **283** (+4 — suppression short-circuit + 3 post-side-
+    effect-no-propagation tests).
+- **NEXT:** merge PR #4 into `main` (review passed, Critical/High applied). Operator sets
+  `ANTHROPIC_API_KEY` + `AI_RESPONDER_ENABLED` in Vercel + runs `npm run schema`; `ai_enabled` stays
+  OFF until a client opts in.
 
 ## ▶ Revamp R1 — "Fresh" design system (2026-06-28) — DONE + DEPLOYED
 Visual-only retheme of the shared kit + login/cockpit/dashboard from the V7 **indigo/slate** look to the

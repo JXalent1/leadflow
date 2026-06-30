@@ -108,11 +108,18 @@ export function buildRunAiResponder(
       bumpStrike: () => bumpAiStrike(clientId, contactId),
     };
 
-    const [state, turns, aiReplyCount] = await Promise.all([
+    const [fresh, state, turns, aiReplyCount] = await Promise.all([
+      getContactById(clientId, contactId),
       getAiState(clientId, contactId),
       getAiHistory(clientId, contactId),
       countAiReplies(clientId, contactId),
     ]);
+
+    // Suppression short-circuit: if the contact is already suppressed / opted out (or has no usable
+    // phone), the model is never called and no AI lead is created — runAiCore returns null and the
+    // webhook defers to the keyword path. The sendReply gate above is still the fail-closed backstop.
+    const optedOut = fresh?.phone ? await isPhoneOptedOut(clientId, fresh.phone) : true;
+    const suppressed = !fresh || !fresh.phone || fresh.suppressed || optedOut;
 
     const opts: AiResponderOptions = {
       withinWindow: withinSendWindow(new Date(), clientWindow(client)),
@@ -121,7 +128,7 @@ export function buildRunAiResponder(
     };
 
     return runAiCore(
-      { config, turns, aiStatus: state.status, aiStrikes: state.strikes, aiReplyCount },
+      { config, turns, suppressed, aiStatus: state.status, aiStrikes: state.strikes, aiReplyCount },
       deps,
       opts,
     );

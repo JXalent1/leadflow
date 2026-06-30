@@ -134,14 +134,18 @@ async function main() {
     }
 
     async function loadInput(contact: InboundContactLite) {
-      const [state, turns, aiReplyCount] = await Promise.all([
+      const [fresh, state, turns, aiReplyCount] = await Promise.all([
+        getContactById(clientId!, contact.id),
         getAiState(clientId!, contact.id),
         getAiHistory(clientId!, contact.id),
         countAiReplies(clientId!, contact.id),
       ]);
+      const optedOut = fresh?.phone ? await isPhoneOptedOut(clientId!, fresh.phone) : true;
+      const suppressed = !fresh || !fresh.phone || fresh.suppressed || optedOut;
       return {
         config: { bizName: "AI-RESPONDER-FIXTURE TEST CLIENT", services: "window cleaning", offer: null, persona: "Lance", location: "Tallahassee, FL" },
         turns,
+        suppressed,
         aiStatus: state.status,
         aiStrikes: state.strikes,
         aiReplyCount,
@@ -153,13 +157,21 @@ async function main() {
       ).n;
     }
 
-    // 1. Suppressed contact → guarded send refuses → no SMS, no ai_reply logged.
+    // 1. Suppressed contact → the model is NEVER called and runAiResponder returns null (defers to
+    //    the keyword path); no SMS, no ai_reply logged. (The sendReply gate is the backstop too.)
     {
       const contact = await freshContact(true);
-      await recordMessage({ clientId, contactId: contact.id, direction: "inbound", body: "hi", status: null });
+      await recordMessage({ clientId, contactId: contact.id, direction: "inbound", body: "yes interested", status: null });
       const sends: string[] = [];
-      const out = await runAiResponder(await loadInput(contact), makeDeps(contact, signal({ reply: "What windows." }), sends), OPTS);
-      check("suppressed: outcome is ai_reply (engaged), but the send was refused", out?.kind === "ai_reply");
+      let classified = false;
+      const deps = makeDeps(contact, signal({ reply: "What windows.", qualified: true, service: "x", wants_call: true }), sends);
+      deps.classify = async () => {
+        classified = true;
+        return signal({ reply: "What windows." });
+      };
+      const out = await runAiResponder(await loadInput(contact), deps, OPTS);
+      check("suppressed: outcome is null (defers to keyword path)", out === null);
+      check("suppressed: model NEVER called", classified === false);
       check("suppressed: NO SMS sent to a suppressed contact", sends.length === 0);
       check("suppressed: no 'ai_reply' logged in DB", (await countAiReplies(clientId!, contact.id)) === 0);
     }

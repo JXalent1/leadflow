@@ -218,13 +218,17 @@ export async function processInbound(
     return { kind: "opt_out", matched: contactId !== null, confirmation };
   }
 
-  // Conversational-AI responder (ai_enabled clients only). Runs AFTER the opt-out/suppression gate
-  // above and only on this FIRST delivery (the duplicate gate already returned) — so it NEVER runs
-  // on an opted-out contact and fires at most once per inbound. It requires a real contact (we only
-  // ever text the stored contact phone; an orphan has none). On null it defers to the keyword path
-  // below (e.g. quiet hours); on ANY throw we ALSO fall back — an AI/API/DB error must never crash
-  // the webhook or skip lead capture. The keyword path stays the authoritative behavior for
-  // ai_disabled clients (route leaves runAiResponder unset → this block is skipped entirely).
+  // Conversational-AI responder (ai_enabled clients only). Runs AFTER the deterministic STOP/keyword
+  // opt-out gate above and only on this FIRST delivery (the duplicate gate already returned) — so the
+  // opt-out decision for THIS message is never model-dependent, and the AI fires at most once per
+  // inbound. It requires a real contact (we only ever text the stored contact phone; an orphan has
+  // none). The wired responder ALSO short-circuits on a PRE-EXISTING suppression/opt-out (it returns
+  // null without calling the model), so the AI never runs on an opted-out contact; its send path is
+  // additionally suppression-gated as a fail-closed backstop. On null it defers to the keyword path
+  // below (suppressed contact / quiet hours); on ANY throw we ALSO fall back — an AI/API/DB error
+  // (BEFORE any side effect; post-side-effect errors are swallowed in the core so they can't double a
+  // lead) must never crash the webhook or skip lead capture. The keyword path stays the authoritative
+  // behavior for ai_disabled clients (route leaves runAiResponder unset → this block is skipped).
   if (contact !== null && deps.runAiResponder) {
     try {
       const aiOutcome = await deps.runAiResponder(contact, msg.body);

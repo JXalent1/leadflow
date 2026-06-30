@@ -81,6 +81,13 @@ export interface AiResponderInput {
   config: AiConfig;
   /** Full conversation oldest→newest; the current inbound is already the last "user" turn. */
   turns: AiTurn[];
+  /**
+   * True if the contact is already suppressed (flag set) or on this client's opt-out list. When true
+   * the model is NEVER called and no AI lead is created — we defer to the keyword path (which also
+   * never texts the contact). Computed by the wire from the freshest DB state; the sendReply gate is
+   * still the fail-closed backstop at send time.
+   */
+  suppressed: boolean;
   /** Persisted per-contact state: 'active'/null | 'handed_off' | 'dismissed'. */
   aiStatus: string | null;
   /** Persisted non-serious strike count. */
@@ -145,16 +152,39 @@ export function buildSystemPrompt(config: AiConfig): string {
 // ---------------------------------------------------------------------------
 
 /**
- * Decide and execute the AI handling of one NON-opted-out inbound. Returns an InboundOutcome when it
- * handled the message, or null to defer to the keyword path (e.g. quiet hours). Never crashes the
- * caller for a control-flow reason; deps.classify may throw on an API error and the CALLER catches
- * that (lib/inbound) to fall back. See the file header for the compliance invariants.
+ * Run a side-effect dep that must NOT propagate an error to the caller. Once the responder has
+ * begun committing effects (created the lead, sent a reply), a later failure must not bubble up to
+ * processInbound — its blanket catch would fall back to the keyword path and DOUBLE the lead/forward
+ * (review HIGH). So every post-decision effect is wrapped: it logs and continues with a fallback.
+ */
+async function safe<T>(label: string, fn: () => Promise<T>, fallback: T): Promise<T> {
+  try {
+    return await fn();
+  } catch (err) {
+    console.error(`[ai-responder] ${label} failed (continuing):`, err instanceof Error ? err.message : String(err));
+    return fallback;
+  }
+}
+
+/**
+ * Decide and execute the AI handling of one inbound. Returns an InboundOutcome when it handled the
+ * message, or null to defer to the keyword path (suppressed contact / quiet hours). The ONLY error
+ * that propagates is a `classify` throw (an API failure BEFORE any side effect) — the CALLER
+ * (lib/inbound) catches it and falls back. Every effect AFTER the decision is wrapped in `safe` so a
+ * post-commit DB/send error can never trigger the keyword fallback and duplicate the lead/forward.
+ * See the file header for the compliance invariants.
  */
 export async function runAiResponder(
   input: AiResponderInput,
   deps: AiResponderDeps,
   opts: AiResponderOptions,
 ): Promise<InboundOutcome | null> {
+  // Suppressed/opted-out contact: never call the model or create an AI lead — defer to the keyword
+  // path (which also never texts the contact). The wire computes this from the freshest DB state, and
+  // the sendReply gate remains the fail-closed backstop. This is what makes "the AI never runs on an
+  // opted-out contact" literally true (review: compliance Finding 1).
+  if (input.suppressed) return null;
+
   // Terminal states: a human already owns this thread (handed off) or we gave up (dismissed).
   // Do NOT fall back to the keyword path here — that would re-forward/re-capture an owned lead.
   if (input.aiStatus === "handed_off" || input.aiStatus === "dismissed") {
@@ -175,26 +205,33 @@ export async function runAiResponder(
 
   // Non-serious (spam/troll/abuse): strike, and dismiss on the 3rd strike. Never reply.
   if (!sig.serious) {
-    await deps.bumpStrike();
+    await safe("bumpStrike", () => deps.bumpStrike(), undefined);
     if (input.aiStrikes + 1 >= opts.maxStrikes) {
-      await deps.markDismissed();
+      await safe("markDismissed", () => deps.markDismissed(), undefined);
       return { kind: "ai_skipped", reason: "dismissed" };
     }
     return { kind: "ai_skipped", reason: "not_serious" };
   }
 
-  // Qualified: create the hot lead, forward it with the rich summary, hand off, then send the one
-  // expectation-setting reply. Order is lead-first so a forward failure still leaves the lead.
+  // Qualified: create the hot lead FIRST (the only effect allowed to propagate — if it throws, no
+  // lead exists yet, so the keyword fallback captures exactly one). Once the lead exists, every
+  // remaining effect is `safe`: a forward/handoff/reply failure logs and continues, but the outcome
+  // stays ai_lead so the caller NEVER falls back to the keyword path (which would double the lead).
   if (sig.qualified && sig.service.trim() && sig.wants_call) {
     const leadId = await deps.createHotLead();
-    const forwarded = await deps.forwardHotLead(leadId, sig.summary.trim() || sig.reply.trim());
-    await deps.markHandedOff();
-    if (sig.reply.trim()) await deps.sendReply(sig.reply.trim());
+    const forwarded = await safe(
+      "forwardHotLead",
+      () => deps.forwardHotLead(leadId, sig.summary.trim() || sig.reply.trim()),
+      false,
+    );
+    await safe("markHandedOff", () => deps.markHandedOff(), undefined);
+    if (sig.reply.trim()) await safe("sendReply", () => deps.sendReply(sig.reply.trim()), false);
     return { kind: "ai_lead", leadId, forwarded };
   }
 
   // Engaged but not yet qualified: send the next short reply (at most one). The guarded sendReply
-  // re-checks suppression; a refusal just means no reply went out.
-  if (sig.reply.trim()) await deps.sendReply(sig.reply.trim());
+  // re-checks suppression; a refusal (or any send/log error) just means no reply went out — wrapped
+  // in `safe` so a post-send DB error can't trigger the keyword fallback and create a spurious lead.
+  if (sig.reply.trim()) await safe("sendReply", () => deps.sendReply(sig.reply.trim()), false);
   return { kind: "ai_reply" };
 }

@@ -43,6 +43,9 @@ function makeDeps(opts: {
   classifyThrows?: boolean;
   /** Simulate a suppressed/opted-out recipient — the guarded send refuses (records nothing). */
   sendRefused?: boolean;
+  /** Simulate a post-commit DB/send failure (must be swallowed, not propagated). */
+  handoffThrows?: boolean;
+  sendReplyThrows?: boolean;
 }): { deps: AiResponderDeps; calls: Calls } {
   const calls: Calls = {
     classify: 0,
@@ -69,6 +72,7 @@ function makeDeps(opts: {
       return signal;
     },
     sendReply: async (text) => {
+      if (opts.sendReplyThrows) throw new Error("send/log boom");
       if (opts.sendRefused) return false; // gate refused — no text goes out
       calls.sent.push(text);
       return true;
@@ -82,6 +86,7 @@ function makeDeps(opts: {
       return true;
     },
     markHandedOff: async () => {
+      if (opts.handoffThrows) throw new Error("handoff UPDATE boom");
       calls.handedOff += 1;
     },
     markDismissed: async () => {
@@ -98,6 +103,7 @@ function makeInput(over: Partial<AiResponderInput> = {}): AiResponderInput {
   return {
     config: CONFIG,
     turns: [{ role: "user", text: "hey what do you guys do" }],
+    suppressed: false,
     aiStatus: null,
     aiStrikes: 0,
     aiReplyCount: 0,
@@ -124,6 +130,19 @@ test("dismissed contact: skipped, no classify, no send", async () => {
   const out = await runAiResponder(makeInput({ aiStatus: "dismissed" }), deps, OPTS);
   assert.deepEqual(out, { kind: "ai_skipped", reason: "dismissed" });
   assert.equal(calls.classify, 0);
+});
+
+// ===========================================================================
+// Suppression short-circuit (review: compliance Finding 1)
+// ===========================================================================
+
+test("suppressed/opted-out contact: returns null (defer to keyword) — model NEVER called, no lead", async () => {
+  const { deps, calls } = makeDeps({ signal: { qualified: true, service: "x", wants_call: true } });
+  const out = await runAiResponder(makeInput({ suppressed: true }), deps, OPTS);
+  assert.equal(out, null, "AI defers to the keyword path for a suppressed contact");
+  assert.equal(calls.classify, 0, "Claude is never called for a suppressed contact");
+  assert.equal(calls.createHotLead, 0, "no AI lead created for a suppressed contact");
+  assert.equal(calls.sent.length, 0);
 });
 
 // ===========================================================================
@@ -188,6 +207,40 @@ test("qualified but service missing: NOT a lead — treated as still-engaged rep
     signal: { reply: "What service did you need.", service: "", wants_call: true, qualified: true },
   });
   const out = await runAiResponder(makeInput(), deps, OPTS);
+  assert.equal(out?.kind, "ai_reply");
+  assert.equal(calls.createHotLead, 0);
+});
+
+// ===========================================================================
+// Post-side-effect errors must NOT propagate (review: correctness HIGH — no duplicate lead/forward)
+// ===========================================================================
+
+test("qualified: a post-createHotLead handoff failure is swallowed — still ai_lead, never propagates", async () => {
+  // If markHandedOff threw and propagated, lib/inbound's catch would fall back to the keyword path
+  // and create a SECOND lead + forward. The core must swallow it and return ai_lead.
+  const { deps, calls } = makeDeps({
+    signal: { reply: "Team will reach out.", service: "window cleaning", wants_call: true, qualified: true, summary: "wants cleaning" },
+    handoffThrows: true,
+  });
+  const out = await runAiResponder(makeInput(), deps, OPTS); // must NOT throw
+  assert.equal(out?.kind, "ai_lead");
+  assert.equal(calls.createHotLead, 1, "exactly one lead — no duplicate from a fallback");
+  assert.equal(calls.forward.length, 1);
+});
+
+test("qualified: a post-lead sendReply failure is swallowed — still ai_lead, no propagation", async () => {
+  const { deps, calls } = makeDeps({
+    signal: { reply: "Team will reach out.", service: "window cleaning", wants_call: true, qualified: true },
+    sendReplyThrows: true,
+  });
+  const out = await runAiResponder(makeInput(), deps, OPTS);
+  assert.equal(out?.kind, "ai_lead");
+  assert.equal(calls.createHotLead, 1);
+});
+
+test("engaged: a sendReply failure is swallowed — still ai_reply, never propagates (no spurious keyword lead)", async () => {
+  const { deps, calls } = makeDeps({ signal: { reply: "What windows.", qualified: false }, sendReplyThrows: true });
+  const out = await runAiResponder(makeInput(), deps, OPTS); // must NOT throw
   assert.equal(out?.kind, "ai_reply");
   assert.equal(calls.createHotLead, 0);
 });

@@ -7,8 +7,8 @@
 //     suppressed), with the SAME precedence as STOP;
 //   - "STOP" still suppresses (the keyword is additive, never a replacement);
 //   - "2 services please" does NOT suppress (exact whole-body match only);
-//   - a client with optout_keyword=NULL (Talan's config) does NOT suppress on "2";
-//   - Talan (client 1) really is optout_keyword=NULL after the migration (byte-unchanged).
+//   - a client with optout_keyword=NULL (STOP-only) does NOT suppress on "2";
+//   - Talan (client 1) is optout_keyword='2' (operator set it live 2026-06-29).
 //
 // Everything created here is deleted at the end → the live DB is left pristine. No SMS is sent (the
 // opt-out path never calls forwardLead; we stub it to throw if it ever does).
@@ -71,9 +71,9 @@ async function main() {
 
   let clientId: number | null = null;
   try {
-    // --- Talan (client 1) is untouched: optout_keyword stays NULL ---------------------------------
+    // --- Talan (client 1) now uses the '2' opt-out keyword (operator-set live 2026-06-29) ---------
     const talan = await getClientById(1);
-    check("client 1 (Talan) optout_keyword is NULL (STOP-only, byte-unchanged)", !!talan && talan.optout_keyword === null);
+    check("client 1 (Talan) optout_keyword is '2' (operator set it live 2026-06-29)", !!talan && talan.optout_keyword === "2");
 
     // --- Create a throwaway client with optout_keyword='2' ----------------------------------------
     const client = await createClient({

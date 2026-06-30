@@ -17,12 +17,15 @@ export default function ReplyBox({
   suppressed,
   offHours,
   windowLabel,
+  scope,
   onSent,
 }: {
   contactId: number;
   suppressed: boolean;
   offHours: boolean;
   windowLabel: string;
+  /** Query suffix scoping the send to the resolved client (e.g. "clientId=2"). (#11) */
+  scope: string;
   onSent: () => void;
 }) {
   const [text, setText] = useState("");
@@ -44,7 +47,7 @@ export default function ReplyBox({
     setSending(true);
     setError(null);
     try {
-      const res = await fetch("/api/reply", {
+      const res = await fetch(`/api/reply?${scope}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ contactId, body: text }),

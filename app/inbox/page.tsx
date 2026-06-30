@@ -3,7 +3,7 @@ import { logout } from "@/app/actions";
 import { getSessionUser } from "@/lib/session";
 import { isOperator, resolveClientIdForUser } from "@/lib/access";
 import { getInboxThreads } from "@/lib/inbox-db";
-import { getClientById, clientWindow } from "@/lib/clients";
+import { getClientById, clientWindow, listClients } from "@/lib/clients";
 import { requestedClientIdFromSearchParams } from "@/lib/request-client";
 import { withinSendWindow, sendWindowLabel } from "@/lib/twilio";
 import InboxClient from "@/components/inbox/inbox-client";
@@ -32,11 +32,18 @@ export default async function InboxPage({
   let initialError: string | null = null;
   let threads = null;
   let window = null;
+  let clientName = "";
+  // Operator-only surface, so listing every client for the switcher is in-scope (mirrors the
+  // cockpit). A client-role user never reaches here (redirected to /client above), and every
+  // inbox read/write is still scoped to the RESOLVED clientId, never the bare list.
+  let clientOptions: { id: number; name: string }[] = [];
   try {
     const client = await getClientById(clientId);
     if (!client) throw new Error("client not found");
+    clientName = client.name;
     window = clientWindow(client);
     threads = await getInboxThreads(clientId);
+    clientOptions = (await listClients()).map((c) => ({ id: c.id, name: c.name }));
   } catch (err) {
     initialError = err instanceof Error ? err.message : "Unknown database error";
   }
@@ -47,11 +54,14 @@ export default async function InboxPage({
         <div>
           <h1 className="text-2xl font-medium tracking-tight text-ink">LeadFlow — Inbox</h1>
           <p className="text-sm text-ink-subtle">
-            Reply to homeowners and track each lead. Talan Window Cleaning · Tallahassee pilot
+            Reply to homeowners and track each lead{clientName ? ` · ${clientName}` : ""}
           </p>
         </div>
         <div className="flex items-center gap-4">
-          <a href="/dashboard" className="text-sm text-ink-subtle hover:text-ink">
+          <a
+            href={`/dashboard?clientId=${clientId}`}
+            className="text-sm text-ink-subtle hover:text-ink"
+          >
             ← Dashboard
           </a>
           <form action={logout}>
@@ -66,6 +76,8 @@ export default async function InboxPage({
         </p>
       ) : (
         <InboxClient
+          clientId={clientId}
+          clients={clientOptions}
           initialThreads={threads}
           initialContactId={initialContactId}
           offHours={!withinSendWindow(new Date(), window)}

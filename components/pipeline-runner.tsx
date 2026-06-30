@@ -55,6 +55,23 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 const ZERO: Tally = { traced: 0, matched: 0, noMatch: 0, clean: 0, flagged: 0, sent: 0, failed: 0 };
 
+/** How many times to auto-retry a transient skip-trace batch failure before pausing. */
+const MAX_BATCH_RETRIES = 4;
+
+/** Backoff between client-side batch retries: 1s, 2s, 4s, 8s (capped). Rides a brief rate-limit. */
+const batchRetryDelayMs = (attempt: number) => Math.min(8000, 1000 * 2 ** (attempt - 1));
+
+/** A transient HTTP failure the driver should ride through (rate-limit / gateway / network blip)
+ *  rather than treat as a dead error. The skip-trace route tags its 502s with an explicit
+ *  `retryable` flag (transient upstream vs. a genuine fault) — honor it first; otherwise a raw
+ *  network/gateway status with no body is transient. The trace endpoint is fully resumable
+ *  (trace_jobs persisted, re-ingest is free, no double-charge), so re-POSTing is safe. */
+function isTransientHttp(status: number, data: Record<string, unknown>): boolean {
+  if (data?.retryable === true) return true;
+  if (data?.retryable === false) return false;
+  return status === 0 || status === 429 || status === 503 || status === 504;
+}
+
 export default function PipelineRunner({
   scope,
   ratePerHour,
@@ -64,6 +81,7 @@ export default function PipelineRunner({
   onChanged,
 }: Props) {
   const [running, setRunning] = useState(false);
+  const [paused, setPaused] = useState(false);
   const [stage, setStage] = useState<string | null>(null);
   const [tally, setTally] = useState<Tally>(ZERO);
   const [msg, setMsg] = useState<{ kind: MsgKind; text: string } | null>(null);
@@ -83,10 +101,40 @@ export default function PipelineRunner({
     return { status: res.status, ok: res.ok, data };
   }
 
+  /**
+   * POST a skip-trace batch, riding through TRANSIENT failures (rate-limit / gateway / network
+   * blip) with backoff instead of failing on the first one. Returns the final result plus a
+   * `transient` flag set when retries were exhausted on a still-transient error — the caller
+   * then pauses gracefully into a resumable state. Safe to re-POST: the trace endpoint persists
+   * its queue ids and re-ingests for free, so a retry never double-charges or double-traces.
+   */
+  async function postTraceBatch(
+    body: Record<string, unknown>
+  ): Promise<{ status: number; ok: boolean; data: Record<string, unknown>; transient: boolean }> {
+    let last: { status: number; ok: boolean; data: Record<string, unknown> } = {
+      status: 0,
+      ok: false,
+      data: {},
+    };
+    for (let attempt = 1; attempt <= MAX_BATCH_RETRIES; attempt++) {
+      try {
+        last = await post("/api/skiptrace", body);
+        if (last.ok && !last.data.error) return { ...last, transient: false };
+        if (!isTransientHttp(last.status, last.data)) return { ...last, transient: false };
+      } catch {
+        // Network throw (fetch rejected) — treat as transient (status 0).
+        last = { status: 0, ok: false, data: {} };
+      }
+      if (attempt < MAX_BATCH_RETRIES) await sleep(batchRetryDelayMs(attempt));
+    }
+    return { ...last, transient: true };
+  }
+
   /** Drive trace → scrub → send to completion. Returns when a stage halts/pauses or all is done. */
   async function runPipeline() {
     setModalOpen(false);
     setRunning(true);
+    setPaused(false);
     setMsg(null);
     const acc: Tally = { ...ZERO };
     setTally(acc);
@@ -95,13 +143,22 @@ export default function PipelineRunner({
       // ---- STAGE 1: SKIP TRACE (idempotent; loops until nothing pending) -------------------
       setStage("Skip-tracing");
       for (let i = 0; i < MAX_STAGE_ITERATIONS; i++) {
-        const { status, ok, data } = await post("/api/skiptrace", { limit: TRACE_BATCH });
+        const { status, ok, data, transient } = await postTraceBatch({ limit: TRACE_BATCH });
         if (status === 401) return setMsg({ kind: "err", text: "Session expired — reload and log in." });
         if (data.error === "insufficient_credits")
           return setMsg({
             kind: "info",
             text: `Paused — trace needs ${data.needed} Tracerfy credits (have ${data.credits}). Top up, then click Run again — it resumes.`,
           });
+        // Transient Tracerfy trouble (rate-limit / outage) survived the auto-retries: pause into a
+        // clearly resumable state instead of dead-ending. Nothing was double-charged or lost.
+        if (transient) {
+          setPaused(true);
+          return setMsg({
+            kind: "info",
+            text: `Skip-trace paused — Tracerfy was temporarily unavailable (rate-limit or outage) and didn't clear after several auto-retries. Traced ${acc.traced} so far. Your progress is saved and nothing was double-charged — click Resume to continue.`,
+          });
+        }
         if (!ok || data.error)
           return setMsg({ kind: "err", text: `Skip trace error: ${String(data.error ?? status)}.` });
         acc.traced += Number(data.traced ?? 0);
@@ -257,15 +314,22 @@ export default function PipelineRunner({
             {savingRate ? "Saving…" : "Save rate"}
           </Button>
 
+          {paused && !running ? (
+            <Button onClick={runPipeline} className="h-9">
+              Resume
+            </Button>
+          ) : null}
+
           <Button
             onClick={() => {
               setConfirmText("");
               setModalOpen(true);
             }}
             disabled={running}
+            variant={paused ? "secondary" : "primary"}
             className="h-9"
           >
-            {running ? "Running…" : "Run pipeline"}
+            {running ? "Running…" : paused ? "Restart" : "Run pipeline"}
           </Button>
         </div>
       </div>

@@ -8,7 +8,13 @@ import StatusDot from "./ui/status-dot";
  * ping to Talan went through (forwarded / forwarded_at). Made the clearest block on
  * the page: a forwarded=false row is a lead whose ping failed and needs attention.
  */
-export default function LeadsTable({ leads }: { leads: LeadRow[] }) {
+export default function LeadsTable({
+  leads,
+  clientId,
+}: {
+  leads: LeadRow[];
+  clientId: number;
+}) {
   return (
     <section className="overflow-hidden rounded-2xl border bg-surface">
       <div className="flex items-center justify-between border-b px-4 py-3">
@@ -16,7 +22,10 @@ export default function LeadsTable({ leads }: { leads: LeadRow[] }) {
           <StatusDot tone="success" />
           Leads ({leads.length})
         </h2>
-        <a href="/inbox" className="text-xs font-medium text-brand-strong hover:text-brand">
+        <a
+          href={`/inbox?clientId=${clientId}`}
+          className="text-xs font-medium text-brand-strong hover:text-brand"
+        >
           Open inbox →
         </a>
       </div>
@@ -70,7 +79,7 @@ export default function LeadsTable({ leads }: { leads: LeadRow[] }) {
                   <td className="px-4 py-3 whitespace-nowrap">
                     {l.contact_id ? (
                       <a
-                        href={`/inbox?contact=${l.contact_id}`}
+                        href={`/inbox?contact=${l.contact_id}&clientId=${clientId}`}
                         className="text-xs font-medium text-brand-strong hover:text-brand"
                       >
                         Open →

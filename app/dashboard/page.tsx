@@ -61,7 +61,7 @@ export default async function DashboardPage({
               <ArrowLeftIcon className="h-4 w-4" />
               <span className="hidden sm:inline">All clients</span>
             </a>
-            <Button href="/inbox" variant="secondary" size="sm">
+            <Button href={`/inbox?clientId=${clientId}`} variant="secondary" size="sm">
               <InboxIcon className="h-4 w-4" />
               Inbox
             </Button>

@@ -105,6 +105,31 @@ ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS scrub_mode text NOT NULL DEFAULT 
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS optout_keyword     text;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS optout_instruction text;
 
+-- ===========================================================================
+-- AI CONVERSATIONAL RESPONDER (Build: ai-responder, 2026-06-29)
+-- ===========================================================================
+-- Per-client conversational-AI config. ai_enabled is OFF by default — the responder ships dark
+-- and the operator flips it per client (lib/clients.updateClientConfig), a global env kill switch
+-- (AI_RESPONDER_ENABLED) gates ALL clients on top of this. The ai_* text fields shape the system
+-- prompt: services offered, the offer/promo, the rep persona (name + tone), and the service area.
+-- STOP / the configured opt-out keyword / suppression are handled DETERMINISTICALLY before the AI
+-- (lib/inbound) and are never model-dependent. Idempotent. Talan (client 1) keeps ai_enabled=false
+-- so client 1 stays byte-unchanged.
+-- NOTE: no statement-separator character may appear in this comment block (apply-schema splits on it).
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS ai_enabled boolean NOT NULL DEFAULT false;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS ai_services text;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS ai_offer    text;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS ai_persona  text;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS ai_location text;
+
+-- Per-contact AI conversation state. ai_status: NULL/'active' (the responder may engage) |
+-- 'handed_off' (qualified -> hot lead forwarded -> a human owns it, stop auto-replying) |
+-- 'dismissed' (3-strike non-serious -> stop). ai_strikes counts non-serious turns toward the
+-- 3-strike rule. The per-conversation turn cap is derived from messages(status='ai_reply'), so
+-- no turn-count column is needed. Idempotent. existing rows backfill ai_status NULL / strikes 0.
+ALTER TABLE contacts ADD COLUMN IF NOT EXISTS ai_status  text;
+ALTER TABLE contacts ADD COLUMN IF NOT EXISTS ai_strikes int NOT NULL DEFAULT 0;
+
 -- Contacts: the homeowner list. Phones are appended later (Session 2, Tracerfy).
 CREATE TABLE IF NOT EXISTS contacts (
   id               serial PRIMARY KEY,

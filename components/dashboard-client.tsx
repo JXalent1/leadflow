@@ -86,19 +86,31 @@ export default function DashboardClient({
       />
 
       <div className="flex flex-wrap items-center gap-2 text-sm">
-        <span className="text-ink-subtle">
-          Leads this {data.autoPause.period}:{" "}
-          <span className="font-medium tabular-nums text-ink">
-            {data.autoPause.leadsThisPeriod}/{data.autoPause.target}
-          </span>{" "}
-          target
-        </span>
-        {data.autoPause.met ? (
-          <Badge tone="brand">
-            <PauseIcon className="h-3 w-3" />
-            Auto-paused — target met, resumes {data.autoPause.nextPeriod}
-          </Badge>
-        ) : null}
+        {data.autoPause.target > 0 ? (
+          <>
+            <span className="text-ink-subtle">
+              Leads this {data.autoPause.period}:{" "}
+              <span className="font-medium tabular-nums text-ink">
+                {data.autoPause.leadsThisPeriod}/{data.autoPause.target}
+              </span>{" "}
+              target
+            </span>
+            {data.autoPause.met ? (
+              <Badge tone="brand">
+                <PauseIcon className="h-3 w-3" />
+                Auto-paused — target met, resumes {data.autoPause.nextPeriod}
+              </Badge>
+            ) : null}
+          </>
+        ) : (
+          <span className="text-ink-subtle">
+            Leads this {data.autoPause.period}:{" "}
+            <span className="font-medium tabular-nums text-ink">
+              {data.autoPause.leadsThisPeriod}
+            </span>{" "}
+            · no cap (auto-pause off)
+          </span>
+        )}
       </div>
 
       <PipelineRunner
@@ -116,7 +128,7 @@ export default function DashboardClient({
         onChanged={refresh}
       />
 
-      <LeadsTable leads={data.recentLeads} />
+      <LeadsTable leads={data.recentLeads} clientId={clientId} />
 
       <div className="grid gap-6 lg:grid-cols-2">
         <ReplyFeed replies={data.recentInbound} />

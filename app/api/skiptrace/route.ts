@@ -13,6 +13,7 @@ import { resolveClientIdForUser } from "@/lib/access";
 import { requestedClientId, campaignIdFromRequest } from "@/lib/request-client";
 import { resolveCampaignForClient } from "@/lib/campaigns";
 import { traceBatch, InsufficientCreditsError } from "@/lib/skiptrace";
+import { isTransientError } from "@/lib/retry";
 import type { TraceType } from "@/lib/tracerfy";
 
 // A 500-record trace can exceed the default function window; allow the max.
@@ -49,7 +50,14 @@ export async function POST(req: Request) {
         { status: 402 }
       );
     }
-    console.error("[skiptrace] failed:", err instanceof Error ? err.message : String(err));
-    return NextResponse.json({ error: "skiptrace_failed" }, { status: 502 });
+    // Transient upstream failures survived the in-batch retries (e.g. a sustained rate-limit).
+    // Flag them so the client driver can wait + auto-resume instead of dead-ending the pipeline;
+    // the run is fully resumable (trace_jobs persisted, re-ingest is free, no double-charge).
+    const retryable = isTransientError(err);
+    console.error(
+      `[skiptrace] failed${retryable ? " (transient, resumable)" : ""}:`,
+      err instanceof Error ? err.message : String(err)
+    );
+    return NextResponse.json({ error: "skiptrace_failed", retryable }, { status: 502 });
   }
 }

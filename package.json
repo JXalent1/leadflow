@@ -24,6 +24,7 @@
     "test:optout": "tsx scripts/optout-keyword-fixture.ts",
     "test:forward": "tsx scripts/forward-fixture.ts",
     "test:ai": "tsx scripts/ai-responder-fixture.ts",
+    "test:inbox-scope": "tsx scripts/inbox-scope-fixture.ts",
     "test": "tsx --test lib/*.test.ts"
   },
   "dependencies": {

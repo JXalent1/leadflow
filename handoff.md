@@ -15,7 +15,53 @@ client) or if the id is < 100000. Cleanups now also drop `trace_jobs`/`scrub_job
 a destructive live-DB fixture without checking it can't touch a real tenant.**
 
 
-_Last updated: 2026-06-28 (Claude Code — Revamp R1: the "Fresh" teal/warm/rounded design system replaces
+_Last updated: 2026-06-29 (Claude Code — UI fixes: client-scoped inbox, modal click-through, auto-pause
+toggle/default. Branch `build/ui-fixes`; PR into `main`, NOT merged.)_
+
+## ▶ UI fixes — client-scoped inbox + modal click-through + auto-pause toggle (2026-06-29) — DONE (PR open)
+Functional-only fixes on branch **`build/ui-fixes`** (a later overhaul will restyle these screens; kept
+changes focused so it can restyle on top). **Did NOT touch** the send path, eligibility, suppression, the
+inbound webhook, `claimForSend`, or the V6 auto-pause ENFORCEMENT — only the inbox READ scoping, the modal
+overlay behavior, and the auto-pause toggle/default/display.
+- **#11 inbox client-scoping.** The page + API routes already resolved the client via
+  `resolveClientIdForUser`, but the inbox's CLIENT-SIDE fetches (`InboxClient` poll/`loadThread`, plus
+  `ReplyBox`/`LeadStatus` writes) called `/api/inbox|reply|leads` with NO `?clientId=`, so they defaulted
+  to client 1 — an operator drilling into client 2 reverted to Talan's threads and replied/updated AS
+  client 1. Fix: `app/inbox/page.tsx` passes the resolved `clientId` (+ the client list, operator-only)
+  into `InboxClient`, which builds `scope="clientId=N"` and appends it to every read and threads it through
+  `ThreadView`→`ReplyBox`/`LeadStatus`. Added an operator client switcher (a `<select>` → `/inbox?clientId=N`,
+  only when >1 client) and made the header show the resolved client's name (was hardcoded "Talan"). The
+  dashboard "Inbox" button + both `leads-table` links now carry `?clientId=`. **Server scoping is unchanged
+  and still authoritative** — a client-role user 403s on a foreign id, the page redirects non-operators to
+  `/client`, and every `lib/inbox-db` query is keyed by the resolved client_id (no cross-client leakage).
+- **#13 modal click-through.** The edit-client modal lived INSIDE the cockpit card, which is an `<a href>`
+  (the drill-through). A native field click bubbled to the anchor and navigated away; `stopPropagation` on
+  the modal container can't cancel an anchor's DEFAULT navigation (it fires regardless of propagation).
+  Fix: render the modal through `createPortal(…, document.body)` so it's no longer a DOM descendant of the
+  anchor — native clicks bubble to `<body>`, never the `<a>`. Kept the in-flow `fixed inset-0` overlay,
+  backdrop-close, and container `stopPropagation`. **GOTCHA for the next session:** any modal/popover
+  mounted inside a `Card href=… interactive` (an `<a>`) MUST portal out or it will navigate on click.
+- **#16 auto-pause toggle + default.** New "Auto-pause when lead target met" checkbox in the edit form;
+  the lead-target input shows only when ON. **New-client default flipped `lead_target` null → `0`** (OFF /
+  never-pause) so a client never silently inherits a small target (the reported `=2` bug). OFF submits `0`;
+  ON submits the positive target (validated ≥1). Dashboard display: "N/T target" only when a real (>0)
+  target is set, else "N · no cap (auto-pause off)" — no more confusing "X/0". The send route /
+  `getTargetStatus` ALREADY treat `target <= 0` as never-pause (`met = target > 0 && …`) — confirmed, not
+  changed. NOTE: `null` lead_target still means "fall back to guarantee" in the DB/send route for legacy
+  rows (Talan), but the form no longer writes null — it writes 0 (OFF) or a positive int (ON). Opening +
+  saving Talan's form would write `0` (genuine OFF); nothing changes unless the operator does that.
+- **500-line cap:** moved `ClientFormValues` + `EMPTY`/`POWERWASH_TEMPLATE`/`SAMPLE_CONTACT` into new pure
+  `components/client-form-defaults.ts` (re-exported from `client-form.tsx`, so `cockpit-view`'s import is
+  unchanged); `client-form.tsx` = 486 lines.
+- **Green here:** `npx tsc --noEmit` clean; `npm run build` green (17 routes); `npm test` = **258**. New
+  **`npm run test:inbox-scope`** fixture proves operator-opens-client-2-scoped (no client-1 leakage), a
+  client-role user 403s on a foreign id, and the toggle persists with OFF never pausing even with a lead.
+- **⚠ NOT run here (needs the operator):** the live-DB fixtures (`test:isolation`/`access`/`cockpit`/
+  `auto-pause`/`passthrough`/`optout`/`forward`/`inbox-scope`) require `DATABASE_URL`, which is absent in
+  this fresh worktree. Run them against Neon before merge — they touch only client 1 + a 900002 throwaway
+  and self-clean. Also manually confirm the modal (click/type every field; no fall-through).
+
+_Earlier — 2026-06-28 (Claude Code — Revamp R1: the "Fresh" teal/warm/rounded design system replaces
 the V7 indigo look across login/cockpit/dashboard; the accent is a re-themable `--brand` CSS-var token.)_
 
 ## ▶ Revamp R1 — "Fresh" design system (2026-06-28) — DONE + DEPLOYED

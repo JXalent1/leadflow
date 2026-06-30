@@ -23,9 +23,11 @@
     "test:passthrough": "tsx scripts/test-passthrough.ts",
     "test:optout": "tsx scripts/optout-keyword-fixture.ts",
     "test:forward": "tsx scripts/forward-fixture.ts",
+    "test:ai": "tsx scripts/ai-responder-fixture.ts",
     "test": "tsx --test lib/*.test.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.107.0",
     "@neondatabase/serverless": "^0.10.4",
     "next": "^14.2.15",
     "react": "^18.3.1",

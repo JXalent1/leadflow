@@ -47,7 +47,13 @@ export type InboundOutcome =
   | { kind: "not_interested"; matched: boolean }
   | { kind: "neutral"; matched: boolean }
   /** Interested-sounding reply from a sender we have no contact for — logged only, no lead. */
-  | { kind: "orphan_logged" };
+  | { kind: "orphan_logged" }
+  /** AI responder qualified the contact → created a hot lead + forwarded it (with a rich summary). */
+  | { kind: "ai_lead"; leadId: number; forwarded: boolean }
+  /** AI responder sent one conversational reply to the stored contact phone (no lead yet). */
+  | { kind: "ai_reply" }
+  /** AI responder declined to act (handed off, dismissed, or turn cap) — no reply, no fallback. */
+  | { kind: "ai_skipped"; reason: string };
 
 /**
  * Every persistent effect the core may cause. The route supplies real lib/db +
@@ -81,6 +87,19 @@ export interface InboundDeps {
     leadId: number;
     replyText: string;
   }): Promise<boolean>;
+  /**
+   * OPTIONAL conversational-AI responder. The route wires this ONLY when the global kill switch
+   * (AI_RESPONDER_ENABLED) is on AND the owning client has ai_enabled=true. When present, it runs
+   * AFTER the opt-out/suppression gate and the dedupe gate (so it never sees an opted-out contact
+   * and fires at most once per inbound), and INSTEAD of the keyword classifier. It owns its own
+   * suppression-checked send + lead capture. Returns an outcome when it handled the message, or
+   * null to defer to the keyword path (e.g. outside the send window). Any throw is caught here and
+   * also falls back to the keyword path — an AI error never crashes the webhook or skips a lead.
+   */
+  runAiResponder?: (
+    contact: InboundContactLite,
+    body: string,
+  ) => Promise<InboundOutcome | null>;
 }
 
 export interface InboundOptions {
@@ -197,6 +216,25 @@ export async function processInbound(
       });
     }
     return { kind: "opt_out", matched: contactId !== null, confirmation };
+  }
+
+  // Conversational-AI responder (ai_enabled clients only). Runs AFTER the opt-out/suppression gate
+  // above and only on this FIRST delivery (the duplicate gate already returned) — so it NEVER runs
+  // on an opted-out contact and fires at most once per inbound. It requires a real contact (we only
+  // ever text the stored contact phone; an orphan has none). On null it defers to the keyword path
+  // below (e.g. quiet hours); on ANY throw we ALSO fall back — an AI/API/DB error must never crash
+  // the webhook or skip lead capture. The keyword path stays the authoritative behavior for
+  // ai_disabled clients (route leaves runAiResponder unset → this block is skipped entirely).
+  if (contact !== null && deps.runAiResponder) {
+    try {
+      const aiOutcome = await deps.runAiResponder(contact, msg.body);
+      if (aiOutcome) return aiOutcome;
+    } catch (err) {
+      console.error(
+        "[inbound] AI responder error; falling back to keyword path:",
+        err instanceof Error ? err.message : String(err),
+      );
+    }
   }
 
   // Not an opt-out → classify interest.

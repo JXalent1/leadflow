@@ -167,11 +167,12 @@ async function main() {
       check("cockpit: plan amount surfaced", row.planAmountCents === 250000);
     }
 
-    // === Talan (client 1) target behavior: lead_target null → falls back to the guarantee ===
+    // === Talan (client 1) target behavior: lead_target = 0 → auto-pause OFF (operator-set 2026-06-29;
+    // 0 disables the deliver-then-stop gate so a flat-retainer client can over-deliver past the guarantee). ===
     const c1 = (await getClientById(1))!;
     const c1Status = await getTargetStatus(c1, NOW);
-    check("client 1 lead_target is null (unchanged) → effective target = guarantee (50), month period",
-      c1.lead_target === null && c1Status.target === c1.lead_guarantee && c1Status.period === "month");
+    check("client 1 lead_target is 0 (auto-pause off) → effective target 0, never pauses, month period",
+      c1.lead_target === 0 && c1Status.target === 0 && c1Status.met === false && c1Status.period === "month");
   } finally {
     // Cleanup — client_invoices FIRST (FK to clients), then the rest.
     await sql`DELETE FROM client_invoices WHERE client_id = ${C2}`;

@@ -17,55 +17,17 @@
  * which is DB-free, so the preview runs client-side.
  */
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { renderMessage, segmentInfo, optOutInstructionFor } from "@/lib/sms";
 import { parseForwardPhones, isProbablyPhone } from "@/lib/forward-phones";
 import Button from "./ui/button";
 import { Field, Input, Select } from "./ui/field";
+import { EMPTY, SAMPLE_CONTACT, type ClientFormValues } from "./client-form-defaults";
 
-/** The editable client config the form reads/writes (a serializable subset of lib/clients Client). */
-export interface ClientFormValues {
-  id?: number;
-  name: string;
-  biz_name: string | null;
-  from_number: string | null;
-  messaging_service_sid: string | null;
-  message_template: string | null;
-  forward_phone: string | null;
-  optout_keyword: string | null;
-  optout_instruction: string | null;
-  send_window_start_hour: number;
-  send_window_end_hour: number;
-  send_timezone: string;
-  send_rate_per_hour: number;
-  lead_guarantee: number;
-  lead_target: number | null;
-  target_period: string; // 'week' | 'month'
-}
-
-const POWERWASH_TEMPLATE =
-  'Hey [NAME], this is your local crew. We\'re working near [ADDRESS] this week — want a free quote on pressure washing, paver sealing, or exterior house cleaning? Reply "2" to opt out';
-
-const EMPTY: ClientFormValues = {
-  name: "",
-  biz_name: null,
-  from_number: null,
-  messaging_service_sid: null,
-  message_template: POWERWASH_TEMPLATE,
-  forward_phone: null,
-  optout_keyword: "2",
-  optout_instruction: null,
-  send_window_start_hour: 10,
-  send_window_end_hour: 19,
-  send_timezone: "America/New_York",
-  send_rate_per_hour: 300,
-  lead_guarantee: 50,
-  lead_target: null,
-  target_period: "month",
-};
-
-const SAMPLE_CONTACT = { firstName: "Chris", zip: "32801", address: "1424 EDGEWATER DR" };
+// Re-exported so existing importers (e.g. cockpit-view) keep importing the type from "./client-form".
+export type { ClientFormValues } from "./client-form-defaults";
 
 export function ClientFormLauncher({
   mode,
@@ -123,9 +85,27 @@ function ClientFormModal({
   const [loginPassword, setLoginPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // Auto-pause is ON only when a real positive target is set; null/0 = OFF (no cap). (#16)
+  const [autoPauseOn, setAutoPauseOn] = useState(
+    typeof initial.lead_target === "number" && initial.lead_target > 0
+  );
+
+  // Render the modal through a portal to <body> (see the return below) — this is mounted-only.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
 
   function set<K extends keyof ClientFormValues>(key: K, val: ClientFormValues[K]) {
     setV((prev) => ({ ...prev, [key]: val }));
+  }
+
+  // Turning auto-pause on seeds a sensible positive target (the guarantee) so the operator never
+  // saves an "on" toggle with an empty/zero target. Turning it off leaves the field value alone
+  // (submit writes 0 regardless of what's typed).
+  function toggleAutoPause(on: boolean) {
+    setAutoPauseOn(on);
+    if (on && (v.lead_target == null || v.lead_target < 1)) {
+      set("lead_target", v.lead_guarantee > 0 ? v.lead_guarantee : 50);
+    }
   }
 
   // Live preview: render the exact first text the homeowner would get, WITH the per-client opt-out
@@ -164,6 +144,10 @@ function ClientFormModal({
         return;
       }
     }
+    if (autoPauseOn && (v.lead_target == null || v.lead_target < 1)) {
+      setErr("Enter a lead target of 1 or more, or turn auto-pause off.");
+      return;
+    }
     setBusy(true);
     try {
       const payload: Record<string, unknown> = {
@@ -180,7 +164,8 @@ function ClientFormModal({
         send_timezone: v.send_timezone,
         send_rate_per_hour: v.send_rate_per_hour,
         lead_guarantee: v.lead_guarantee,
-        lead_target: v.lead_target,
+        // OFF → 0 (never auto-pause); ON → the positive target the operator set. (#16)
+        lead_target: autoPauseOn ? Math.max(1, Math.floor(v.lead_target as number)) : 0,
         target_period: v.target_period,
       };
       let res: Response;
@@ -216,7 +201,14 @@ function ClientFormModal({
     }
   }
 
-  return (
+  // Render through a portal to <body> so the modal is NOT a DOM descendant of the cockpit client
+  // card (which is an <a href> drill-through). Without this, a native click on a field bubbles to
+  // the ancestor anchor and navigates away — stopPropagation alone can't cancel the anchor's default
+  // navigation (#13). The portal escapes the anchor's subtree entirely, and the backdrop/container
+  // stopPropagation keeps clicks inside the modal. Portal only after mount (document is client-only).
+  if (!mounted) return null;
+
+  return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/40 p-4 backdrop-blur-sm"
       onClick={onClose}
@@ -376,7 +368,7 @@ function ClientFormModal({
             </Field>
           </div>
 
-          <div className="grid gap-4 sm:grid-cols-3">
+          <div className="grid gap-4 sm:grid-cols-2">
             <Field label="Lead guarantee" htmlFor="cf-guar">
               <Input
                 id="cf-guar"
@@ -386,19 +378,11 @@ function ClientFormModal({
                 onChange={(e) => set("lead_guarantee", Number(e.target.value))}
               />
             </Field>
-            <Field label="Lead target" htmlFor="cf-target" help="Blank = use the guarantee.">
-              <Input
-                id="cf-target"
-                type="number"
-                min={0}
-                value={v.lead_target ?? ""}
-                onChange={(e) =>
-                  set("lead_target", e.target.value === "" ? null : Number(e.target.value))
-                }
-                placeholder="= guarantee"
-              />
-            </Field>
-            <Field label="Target period" htmlFor="cf-period">
+            <Field
+              label="Target period"
+              htmlFor="cf-period"
+              help="Used only when auto-pause is on."
+            >
               <Select
                 id="cf-period"
                 value={v.target_period}
@@ -408,6 +392,49 @@ function ClientFormModal({
                 <option value="week">week</option>
               </Select>
             </Field>
+          </div>
+
+          {/* Auto-pause toggle (#16): off = no cap (lead_target 0, never pauses); on = stop after
+              N leads per period. The target input only shows when on. */}
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+            <label htmlFor="cf-autopause" className="flex cursor-pointer items-start justify-between gap-3">
+              <span>
+                <span className="text-sm font-medium text-slate-800">
+                  Auto-pause when lead target met
+                </span>
+                <span className="mt-0.5 block text-xs font-normal text-slate-500">
+                  Stop sending once this many leads come in per {v.target_period}. Off = no cap
+                  (the campaign never auto-pauses).
+                </span>
+              </span>
+              <input
+                id="cf-autopause"
+                type="checkbox"
+                checked={autoPauseOn}
+                onChange={(e) => toggleAutoPause(e.target.checked)}
+                className="mt-0.5 h-5 w-5 shrink-0 accent-indigo-600"
+              />
+            </label>
+            {autoPauseOn ? (
+              <div className="mt-3">
+                <Field
+                  label="Lead target"
+                  htmlFor="cf-target"
+                  help={`Pause after this many leads per ${v.target_period}.`}
+                >
+                  <Input
+                    id="cf-target"
+                    type="number"
+                    min={1}
+                    value={v.lead_target ?? ""}
+                    onChange={(e) =>
+                      set("lead_target", e.target.value === "" ? null : Number(e.target.value))
+                    }
+                    placeholder="e.g. 50"
+                  />
+                </Field>
+              </div>
+            ) : null}
           </div>
 
           {mode === "create" ? (
@@ -453,6 +480,7 @@ function ClientFormModal({
           </Button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

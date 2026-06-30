@@ -7,14 +7,23 @@ import { displayName, formatTime } from "./dashboard-utils";
  * ping to Talan went through (forwarded / forwarded_at). Made the clearest block on
  * the page: a forwarded=false row is a lead whose ping failed and needs attention.
  */
-export default function LeadsTable({ leads }: { leads: LeadRow[] }) {
+export default function LeadsTable({
+  leads,
+  clientId,
+}: {
+  leads: LeadRow[];
+  clientId: number;
+}) {
   return (
     <section className="overflow-hidden rounded-xl border border-emerald-300 bg-white shadow-sm">
       <div className="flex items-center justify-between border-b border-emerald-200 bg-emerald-50 px-4 py-3">
         <h2 className="text-base font-semibold text-emerald-900">
           Leads ({leads.length})
         </h2>
-        <a href="/inbox" className="text-xs font-medium text-emerald-700 hover:text-emerald-900">
+        <a
+          href={`/inbox?clientId=${clientId}`}
+          className="text-xs font-medium text-emerald-700 hover:text-emerald-900"
+        >
           Open inbox →
         </a>
       </div>
@@ -70,7 +79,7 @@ export default function LeadsTable({ leads }: { leads: LeadRow[] }) {
                   <td className="px-4 py-3 whitespace-nowrap">
                     {l.contact_id ? (
                       <a
-                        href={`/inbox?contact=${l.contact_id}`}
+                        href={`/inbox?contact=${l.contact_id}&clientId=${clientId}`}
                         className="text-xs font-medium text-emerald-700 hover:text-emerald-900"
                       >
                         Open →

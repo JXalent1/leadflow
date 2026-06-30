@@ -2,6 +2,29 @@
 
 _For the next session — read this first._
 
+## ▶ Merge `main` → `build/server-side-send` resolved + re-reviewed (2026-06-30) — PR #7 open
+The server-side-sender branch was merged up to current `main` (now carrying **#18 follow-up
+campaigns** + **#6 AI settings**). Resolution kept BOTH the server-side extraction AND #18's
+follow-up safety. **The interrupted merge ("disk problem") had MERGE_HEAD=`78d1dc0`; main had since
+advanced to `b359ff3`** — so the in-progress merge was committed first, then a second `git merge
+origin/main` pulled in `b359ff3` (the auto-pause fixture assertion update: client 1 `lead_target=0`,
+auto-pause off). Both merges committed; `origin/main` is now an ancestor of HEAD.
+- **`followUp` (#18) lives INSIDE `lib/send-batch.sendCampaignBatch`** — threaded into
+  `getEligibleContacts` + atomic `claimForSend` + `runSend`, so a contact who opts out / replies /
+  becomes a lead AFTER seeding is re-excluded EVERY batch. **Both** the operator route
+  (`source_campaign_id !== null`) and the cron drain (`getAutoSendTargets().followUp`) apply it.
+- **Green:** `tsc` clean, `npm run build` green, `npm test` = **317**, `npm run schema` (80 stmts),
+  and the FULL live suite (isolation/access/cockpit/auto-pause/passthrough/optout/forward/ai/
+  inbox-scope/followup/cron) — all pass. Explicit follow-up-via-cron acceptance proved a follow-up
+  drains server-side and still excludes opted-out + since-replied + leads, no double-send.
+- **Re-review (3 read-only reviewers, send-path critical) — all claims HOLD, no Critical/High/Medium:**
+  no double-send via the cron at any concurrency (atomic claim is the guarantee); follow-up still
+  excludes opted-out/replied/lead in both callers; cron honors window + suppression; the drain
+  **fails closed** without `CRON_SECRET`. Logged Lows (all pre-existing, fail toward under-sending):
+  stuck-`sending`=lost-not-doubled; duplicate run rows (bookkeeping); per-contact-not-per-phone dedup.
+- **NEXT:** merge PR #7 into `main` (review passed). Operator still needs `CRON_SECRET` in Vercel
+  (Production) + the per-minute cron firing — see the server-side-sender entry below for the runbook.
+
 ## ⚠️ INCIDENT + fixture safety fix (2026-06-27)
 **What happened:** the live-DB fixtures (`isolation`/`access`/`cockpit`/`auto-pause`/`passthrough`)
 hardcoded `C2 = 2` as a disposable test tenant and ran `DELETE ... WHERE client_id = 2` UNCONDITIONALLY

@@ -9,6 +9,14 @@
 // instant it is submitted, and a run RESUMES by re-ingesting any orphaned (paid but
 // not-yet-written-back) job FIRST. A crash/reload between submit and result-write can
 // no longer strand paid-for results — re-reading a completed queue does not re-charge.
+//
+// Resilience (2026-06-29): the submit + credit + poll calls are wrapped in withRetry so
+// a single TRANSIENT Tracerfy error (429/timeout/5xx) no longer kills the run — it backs
+// off and retries. A terminal credit shortfall still stops cleanly (InsufficientCredits-
+// Error, nothing spent). A poison input (no usable address) is screened out pre-submit
+// and suppressed fail-closed (no_match) so one bad record can't waste a credit or block
+// the batch. All external functions are injectable (deps) so tests mock Tracerfy + the DB
+// with no real API spend.
 
 import { getContactsForSkiptrace, setTraceResult, markSuppressed, type Contact } from "@/lib/db";
 import {
@@ -24,6 +32,7 @@ import {
   type TraceResultRow,
   type TraceType,
 } from "@/lib/tracerfy";
+import { withRetry, isTransientError, type RetryOptions } from "@/lib/retry";
 
 export interface TraceBatchResult {
   traced: number;
@@ -31,6 +40,7 @@ export interface TraceBatchResult {
   noMatch: number;
   queueId?: number;
   recovered?: number; // contacts written back from a recovered orphaned job this run
+  skipped?: number; // poison records (no usable address) suppressed fail-closed, not submitted
   note?: string;
 }
 
@@ -42,6 +52,35 @@ export interface IngestResult {
   ingested: number; // pending contacts in scope that were written back (matched + noMatch)
   note?: string;
 }
+
+/**
+ * The external collaborators traceBatch touches — the DB writers + the Tracerfy client.
+ * Defaults to the real implementations; tests pass fakes so the whole batch (including
+ * retry/backoff, poison-skip, and orphaned-job recovery) runs with no DB and no API spend.
+ */
+export interface TraceDeps {
+  getContactsForSkiptrace: typeof getContactsForSkiptrace;
+  setTraceResult: typeof setTraceResult;
+  markSuppressed: typeof markSuppressed;
+  createTraceJob: typeof createTraceJob;
+  getOutstandingTraceJobs: typeof getOutstandingTraceJobs;
+  markTraceJobIngested: typeof markTraceJobIngested;
+  getCredits: typeof getCredits;
+  submitTrace: typeof submitTrace;
+  getTraceResults: typeof getTraceResults;
+}
+
+const defaultDeps: TraceDeps = {
+  getContactsForSkiptrace,
+  setTraceResult,
+  markSuppressed,
+  createTraceJob,
+  getOutstandingTraceJobs,
+  markTraceJobIngested,
+  getCredits,
+  submitTrace,
+  getTraceResults,
+};
 
 /** Thrown when the Tracerfy balance can't cover the batch — stop before spending. */
 export class InsufficientCreditsError extends Error {
@@ -55,6 +94,31 @@ export class InsufficientCreditsError extends Error {
   }
 }
 
+/** Default retry policy for a trace call, with a label so retries are logged. Test
+ *  overrides (sleep/rng/maxAttempts) win — they're spread last. */
+function traceRetry(label: string, overrides: RetryOptions = {}): RetryOptions {
+  return {
+    isRetryable: isTransientError,
+    onRetry: ({ attempt, delayMs, err }) =>
+      console.warn(
+        `[skiptrace] transient ${label} error (attempt ${attempt}); retrying in ${delayMs}ms: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      ),
+    ...overrides,
+  };
+}
+
+/**
+ * A trace input with no usable situs address can never be matched back to its result
+ * (the match key would be empty) and would only waste a credit — it's a "poison" record.
+ * Returns false for such inputs so they're screened out of the submitted batch and
+ * suppressed fail-closed (no_match) instead of killing or silently corrupting the run.
+ */
+export function isTraceable(c: { address: string | null }): boolean {
+  return typeof c.address === "string" && c.address.trim().length > 0;
+}
+
 /**
  * Map parsed trace rows back to a set of contacts and write the results, fail closed.
  * The ONE place trace results touch contacts — both a live trace and a recovery ingest
@@ -64,7 +128,8 @@ export class InsufficientCreditsError extends Error {
 async function applyTraceRows(
   clientId: number,
   scope: Contact[],
-  rows: TraceResultRow[]
+  rows: TraceResultRow[],
+  deps: TraceDeps
 ): Promise<{ matched: number; noMatch: number }> {
   // Map results back to contacts by normalized address+city+state (no zip in the CSV).
   const resultByKey = new Map<string, TraceResultRow>();
@@ -77,16 +142,25 @@ async function applyTraceRows(
   for (const c of scope) {
     const hit = resultByKey.get(matchKey(c.address, c.city, c.state));
     if (hit && hit.phone) {
-      await setTraceResult(clientId, c.id, { phone: hit.phone, phoneType: hit.phoneType, status: "matched" });
+      await deps.setTraceResult(clientId, c.id, { phone: hit.phone, phoneType: hit.phoneType, status: "matched" });
       matched++;
     } else {
       // Fail closed: no usable mobile => suppress so it can never enter the send path.
-      await setTraceResult(clientId, c.id, { phone: null, phoneType: null, status: "no_match" });
-      await markSuppressed(clientId, c.id, "no_match");
+      await deps.setTraceResult(clientId, c.id, { phone: null, phoneType: null, status: "no_match" });
+      await deps.markSuppressed(clientId, c.id, "no_match");
       noMatch++;
     }
   }
   return { matched, noMatch };
+}
+
+/** Suppress a poison record fail-closed (no usable address → no_match), never submitted. */
+async function suppressPoison(clientId: number, contacts: Contact[], deps: TraceDeps): Promise<number> {
+  for (const c of contacts) {
+    await deps.setTraceResult(clientId, c.id, { phone: null, phoneType: null, status: "no_match" });
+    await deps.markSuppressed(clientId, c.id, "no_match");
+  }
+  return contacts.length;
 }
 
 /**
@@ -102,9 +176,11 @@ async function applyTraceRows(
 export async function ingestTraceQueue(
   clientId: number,
   queueId: number,
-  opts: { contactIds?: number[] } = {}
+  opts: { contactIds?: number[] } = {},
+  deps: TraceDeps = defaultDeps,
+  retry: RetryOptions = {}
 ): Promise<IngestResult> {
-  const allPending = await getContactsForSkiptrace(clientId);
+  const allPending = await deps.getContactsForSkiptrace(clientId);
   let scope = allPending;
   if (opts.contactIds) {
     const ids = new Set(opts.contactIds);
@@ -117,13 +193,18 @@ export async function ingestTraceQueue(
 
   // The job is already complete, so the first fetch returns every available row; the
   // bounded poll is only a guard against an incremental read (returns whatever arrived).
-  const { rows } = await getTraceResults(queueId, {
-    expectedRows: scope.length,
-    maxAttempts: 6,
-    intervalMs: 4000,
-  });
+  // Re-reading a queue NEVER charges, so retrying a transient poll error is free + safe.
+  const { rows } = await withRetry(
+    () =>
+      deps.getTraceResults(queueId, {
+        expectedRows: scope.length,
+        maxAttempts: 6,
+        intervalMs: 4000,
+      }),
+    traceRetry("getTraceResults", retry)
+  );
 
-  const { matched, noMatch } = await applyTraceRows(clientId, scope, rows);
+  const { matched, noMatch } = await applyTraceRows(clientId, scope, rows, deps);
   return { queueId, matched, noMatch, ingested: scope.length };
 }
 
@@ -133,12 +214,16 @@ export async function ingestTraceQueue(
  * applies its results to ONLY the contacts it submitted, and marks it 'ingested'. Run this
  * at the start of every trace so a crash can never permanently strand paid-for results.
  */
-export async function ingestOutstandingJobs(clientId: number): Promise<IngestResult[]> {
-  const jobs = await getOutstandingTraceJobs(clientId);
+export async function ingestOutstandingJobs(
+  clientId: number,
+  deps: TraceDeps = defaultDeps,
+  retry: RetryOptions = {}
+): Promise<IngestResult[]> {
+  const jobs = await deps.getOutstandingTraceJobs(clientId);
   const results: IngestResult[] = [];
   for (const job of jobs) {
-    const res = await ingestTraceQueue(clientId, job.queue_id, { contactIds: job.contact_ids });
-    await markTraceJobIngested(clientId, job.id, res.matched, res.noMatch);
+    const res = await ingestTraceQueue(clientId, job.queue_id, { contactIds: job.contact_ids }, deps, retry);
+    await deps.markTraceJobIngested(clientId, job.id, res.matched, res.noMatch);
     results.push(res);
   }
   return results;
@@ -149,11 +234,14 @@ export async function ingestOutstandingJobs(clientId: number): Promise<IngestRes
  * any orphaned job, then traces only still-pending contacts; the new job's queue id is
  * persisted BEFORE the result poll, so a crash mid-fetch is recoverable on the next run.
  * Writes phones for matches and suppresses no-matches. Throws InsufficientCreditsError if
- * the balance can't cover the batch (nothing is spent in that case).
+ * the balance can't cover the batch (nothing is spent in that case). Transient Tracerfy
+ * errors are retried with backoff; poison records (no usable address) are screened out.
  */
 export async function traceBatch(
   clientId: number,
-  opts: { campaignId?: number; limit?: number; traceType?: TraceType } = {}
+  opts: { campaignId?: number; limit?: number; traceType?: TraceType } = {},
+  deps: TraceDeps = defaultDeps,
+  retry: RetryOptions = {}
 ): Promise<TraceBatchResult> {
   const traceType: TraceType = opts.traceType === "advanced" ? "advanced" : "normal";
 
@@ -161,12 +249,12 @@ export async function traceBatch(
   // CLIENT-wide (not campaign-scoped) on purpose — orphaned jobs are pinned to the exact
   // contact_ids they submitted, recovering them is free + never crosses a client boundary, and
   // failing to recover would strand paid results. New tracing below is scoped to opts.campaignId.
-  const recovered = await ingestOutstandingJobs(clientId);
+  const recovered = await ingestOutstandingJobs(clientId, deps, retry);
   const recoveredMatched = recovered.reduce((a, r) => a + r.matched, 0);
   const recoveredNoMatch = recovered.reduce((a, r) => a + r.noMatch, 0);
   const recoveredCount = recovered.reduce((a, r) => a + r.ingested, 0);
 
-  const pending = await getContactsForSkiptrace(clientId, {
+  const pending = await deps.getContactsForSkiptrace(clientId, {
     campaignId: opts.campaignId,
     limit: opts.limit,
   });
@@ -180,24 +268,48 @@ export async function traceBatch(
     };
   }
 
-  // Pre-flight credit guard: stop before spending if we can't cover the batch.
-  const credits = await getCredits();
-  const perLead = traceType === "advanced" ? 2 : 1;
-  if (credits < pending.length * perLead) {
-    throw new InsufficientCreditsError(credits, pending.length * perLead, pending.length);
+  // Screen out poison records (no usable address) BEFORE any spend: suppress them fail-closed
+  // (no_match) so one bad input can never waste a credit or block the rest of the batch.
+  const traceable = pending.filter(isTraceable);
+  const poison = pending.filter((c) => !isTraceable(c));
+  const skipped = await suppressPoison(clientId, poison, deps);
+
+  if (traceable.length === 0) {
+    return {
+      traced: recoveredCount + skipped,
+      matched: recoveredMatched,
+      noMatch: recoveredNoMatch + skipped,
+      recovered: recoveredCount,
+      skipped,
+      note: "skipped poison record(s) with no usable address; nothing traceable",
+    };
   }
 
-  const contactIds = pending.map((c) => c.id);
-  const { queueId, rowsUploaded } = await submitTrace(
-    pending.map((c) => ({
-      address: c.address,
-      city: c.city,
-      state: c.state,
-      zip: c.zip,
-      firstName: c.first_name,
-      lastName: c.last_name,
-    })),
-    { traceType }
+  // Pre-flight credit guard: stop before spending if we can't cover the (traceable) batch.
+  // Retried on transient errors — reading the balance never charges.
+  const credits = await withRetry(() => deps.getCredits(), traceRetry("getCredits", retry));
+  const perLead = traceType === "advanced" ? 2 : 1;
+  if (credits < traceable.length * perLead) {
+    throw new InsufficientCreditsError(credits, traceable.length * perLead, traceable.length);
+  }
+
+  const contactIds = traceable.map((c) => c.id);
+  // Retry a transient submit failure (429/timeout/5xx). The dominant case is a 429 — the
+  // request is rejected, so no queue is created and no credit is spent; the retry is safe.
+  const { queueId, rowsUploaded } = await withRetry(
+    () =>
+      deps.submitTrace(
+        traceable.map((c) => ({
+          address: c.address,
+          city: c.city,
+          state: c.state,
+          zip: c.zip,
+          firstName: c.first_name,
+          lastName: c.last_name,
+        })),
+        { traceType }
+      ),
+    traceRetry("submitTrace", retry)
   );
 
   // DURABILITY: persist the queue id + this batch's contact ids the instant the trace is
@@ -205,16 +317,17 @@ export async function traceBatch(
   // leaves a recoverable 'submitted' job instead of orphaning paid-for results. (The only
   // remaining window is the millisecond between submit and this write; the prior bug left
   // the ENTIRE fetch unprotected.)
-  const jobId = await createTraceJob({ clientId, queueId, contactIds, traceType, rowsUploaded });
+  const jobId = await deps.createTraceJob({ clientId, queueId, contactIds, traceType, rowsUploaded });
 
-  const res = await ingestTraceQueue(clientId, queueId, { contactIds });
-  await markTraceJobIngested(clientId, jobId, res.matched, res.noMatch);
+  const res = await ingestTraceQueue(clientId, queueId, { contactIds }, deps, retry);
+  await deps.markTraceJobIngested(clientId, jobId, res.matched, res.noMatch);
 
   return {
-    traced: res.ingested + recoveredCount,
+    traced: res.ingested + recoveredCount + skipped,
     matched: res.matched + recoveredMatched,
-    noMatch: res.noMatch + recoveredNoMatch,
+    noMatch: res.noMatch + recoveredNoMatch + skipped,
     queueId,
     recovered: recoveredCount,
+    skipped,
   };
 }

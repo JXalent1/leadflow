@@ -218,21 +218,21 @@ function ClientFormModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/40 p-4 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 p-4 backdrop-blur-sm"
       onClick={onClose}
     >
       <div
-        className="my-6 w-full max-w-2xl rounded-xl border border-slate-200 bg-white shadow-xl"
+        className="my-6 w-full max-w-2xl rounded-2xl border bg-surface"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
-          <h2 className="text-base font-semibold text-slate-900">
+        <div className="flex items-center justify-between border-b px-5 py-4">
+          <h2 className="text-base font-medium text-ink">
             {mode === "create" ? "Add a new client" : `Edit ${initial.name}`}
           </h2>
           <button
             type="button"
             onClick={onClose}
-            className="rounded-md px-2 py-1 text-sm text-slate-500 hover:text-slate-900"
+            className="rounded-md px-2 py-1 text-sm text-ink-subtle hover:text-ink"
           >
             Close
           </button>
@@ -286,7 +286,7 @@ function ClientFormModal({
                 onChange={(e) => set("forward_phone", e.target.value || null)}
                 rows={2}
                 placeholder="+14075551234, +14075556789"
-                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:border-indigo-500"
+                className="w-full rounded-lg border border-hairline-strong bg-surface px-3 py-2 text-sm text-ink placeholder:text-ink-subtle focus:border-brand"
               />
             </Field>
           </div>
@@ -301,22 +301,22 @@ function ClientFormModal({
               value={v.message_template ?? ""}
               onChange={(e) => set("message_template", e.target.value)}
               rows={4}
-              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:border-indigo-500"
+              className="w-full rounded-lg border border-hairline-strong bg-surface px-3 py-2 text-sm text-ink placeholder:text-ink-subtle focus:border-brand"
             />
           </Field>
 
           {/* Live preview — exact first text + segment count, with the per-client opt-out line. */}
-          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-            <div className="mb-1 flex items-center justify-between text-[11px] font-medium uppercase tracking-wide text-slate-500">
+          <div className="rounded-lg border bg-surface-muted p-3">
+            <div className="mb-1 flex items-center justify-between text-[11px] font-medium text-ink-subtle">
               <span>Preview (sample contact)</span>
-              <span className={preview.seg.segments > 1 ? "text-amber-700" : "text-slate-500"}>
+              <span className={preview.seg.segments > 1 ? "text-amber-700" : "text-ink-subtle"}>
                 {preview.seg.length} chars · {preview.seg.segments} segment
                 {preview.seg.segments === 1 ? "" : "s"} · {preview.seg.encoding}
               </span>
             </div>
-            <p className="whitespace-pre-wrap text-sm text-slate-800">{preview.body}</p>
-            <p className="mt-2 text-[11px] text-slate-500">
-              Opt-out line shown: <span className="font-medium text-slate-700">{preview.optLine}</span>
+            <p className="whitespace-pre-wrap text-sm text-ink">{preview.body}</p>
+            <p className="mt-2 text-[11px] text-ink-subtle">
+              Opt-out line shown: <span className="font-medium text-ink-muted">{preview.optLine}</span>
             </p>
           </div>
 
@@ -411,8 +411,8 @@ function ClientFormModal({
           </div>
 
           {mode === "create" ? (
-            <div className="rounded-lg border border-indigo-100 bg-indigo-50/40 p-4">
-              <p className="mb-3 text-xs font-medium text-indigo-900">
+            <div className="rounded-lg border bg-surface-muted p-4">
+              <p className="mb-3 text-xs font-medium text-ink">
                 Client login (optional) — creates the client&apos;s portal account
               </p>
               <div className="grid gap-4 sm:grid-cols-2">
@@ -444,7 +444,7 @@ function ClientFormModal({
           ) : null}
         </div>
 
-        <div className="flex items-center justify-end gap-2 border-t border-slate-200 px-5 py-4">
+        <div className="flex items-center justify-end gap-2 border-t px-5 py-4">
           <Button variant="secondary" onClick={onClose} disabled={busy}>
             Cancel
           </Button>

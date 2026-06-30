@@ -93,7 +93,7 @@ export default function CampaignBar({ clientId, campaigns, selectedCampaignId }:
   return (
     <Card padded={false}>
       <div className="flex flex-wrap items-center gap-3 p-4">
-        <label className="text-sm font-medium text-slate-700">Campaign</label>
+        <label className="text-sm font-medium text-ink-muted">Campaign</label>
         {campaigns.length > 0 ? (
           <>
             <Select
@@ -111,7 +111,7 @@ export default function CampaignBar({ clientId, campaigns, selectedCampaignId }:
             {selected ? modeBadge(selected.scrub_mode) : null}
           </>
         ) : (
-          <span className="text-sm text-slate-400">No campaigns yet.</span>
+          <span className="text-sm text-ink-subtle">No campaigns yet.</span>
         )}
 
         <Button
@@ -126,10 +126,10 @@ export default function CampaignBar({ clientId, campaigns, selectedCampaignId }:
       </div>
 
       {showUpload ? (
-        <div className="flex flex-col gap-4 border-t border-slate-100 p-4">
-          <p className="text-xs text-slate-500">
+        <div className="flex flex-col gap-4 border-t p-4">
+          <p className="text-xs text-ink-subtle">
             CSV columns:{" "}
-            <span className="font-mono text-slate-600">FirstName, LastName, Address, City, State, Zip</span>{" "}
+            <span className="font-mono text-ink-muted">FirstName, LastName, Address, City, State, Zip</span>{" "}
             (Address required). Creates a new campaign for this client and imports the list.
           </p>
 
@@ -149,7 +149,7 @@ export default function CampaignBar({ clientId, campaigns, selectedCampaignId }:
                 type="file"
                 accept=".csv,text/csv"
                 onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-                className="text-sm text-slate-600 file:mr-3 file:rounded-lg file:border-0 file:bg-slate-100 file:px-3 file:py-2 file:text-sm file:font-medium file:text-slate-700 hover:file:bg-slate-200"
+                className="text-sm text-ink-muted file:mr-3 file:rounded-lg file:border-0 file:bg-surface-muted file:px-3 file:py-2 file:text-sm file:font-medium file:text-ink-muted hover:file:bg-surface-muted"
               />
             </Field>
           </div>

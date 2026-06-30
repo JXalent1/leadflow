@@ -56,9 +56,9 @@ export default function LeadStatus({
   }
 
   return (
-    <div className="rounded-md border border-neutral-200 bg-neutral-50 p-3">
+    <div className="rounded-lg border bg-surface-muted p-3">
       <div className="flex flex-wrap items-center gap-3">
-        <label className="text-xs font-medium uppercase tracking-wide text-neutral-500">
+        <label className="text-xs font-medium text-ink-subtle">
           Lead status
         </label>
         <select
@@ -67,7 +67,7 @@ export default function LeadStatus({
             setStatus(e.target.value);
             setSaved(false);
           }}
-          className="rounded-md border border-neutral-300 px-2 py-1 text-sm"
+          className="rounded-lg border border-hairline-strong bg-surface px-2 py-1 text-sm text-ink outline-none focus:border-brand"
         >
           {LEAD_STATUSES.map((s) => (
             <option key={s} value={s}>
@@ -84,13 +84,13 @@ export default function LeadStatus({
         }}
         placeholder="Notes (e.g. quoted $X, follow up Friday)…"
         rows={2}
-        className="mt-2 w-full resize-y rounded-md border border-neutral-300 px-2 py-1 text-sm outline-none focus:border-neutral-900"
+        className="mt-2 w-full resize-y rounded-lg border border-hairline-strong bg-surface px-2 py-1 text-sm text-ink placeholder:text-ink-subtle outline-none focus:border-brand"
       />
       <div className="mt-2 flex items-center gap-3">
         <button
           onClick={save}
           disabled={saving || !dirty}
-          className="rounded-md bg-neutral-900 px-3 py-1 text-xs font-medium text-white hover:bg-neutral-700 disabled:opacity-40"
+          className="rounded-lg bg-brand px-3 py-1 text-xs font-medium text-brand-fg hover:bg-brand-strong disabled:opacity-40"
         >
           {saving ? "Saving…" : "Save"}
         </button>

@@ -33,19 +33,19 @@ export default async function ClientPage() {
     <main className="mx-auto flex min-h-screen max-w-3xl flex-col gap-8 px-6 py-10">
       <header className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold">{initial?.bizName || clientName || "LeadFlow"}</h1>
-          <p className="text-sm text-neutral-500">Your leads — powered by LeadFlow</p>
+          <h1 className="text-2xl font-medium tracking-tight text-ink">{initial?.bizName || clientName || "LeadFlow"}</h1>
+          <p className="text-sm text-ink-subtle">Your leads — powered by LeadFlow</p>
         </div>
         <div className="flex items-center gap-4">
-          <span className="text-sm text-neutral-500">{user.email}</span>
+          <span className="text-sm text-ink-subtle">{user.email}</span>
           <form action={logout}>
-            <button className="text-sm text-neutral-500 hover:text-neutral-900">Log out</button>
+            <button className="text-sm text-ink-subtle hover:text-ink">Log out</button>
           </form>
         </div>
       </header>
 
       {error || !initial ? (
-        <p className="rounded-md bg-red-50 px-4 py-3 text-sm text-red-700">
+        <p className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
           Could not load your dashboard{error ? `: ${error}` : ""}.
         </p>
       ) : (

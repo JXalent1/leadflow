@@ -3,30 +3,53 @@
 @tailwind utilities;
 
 /*
- * "Fresh" design system (R1). Accent is a re-themable token, not a hardcoded teal: every kit
- * component reads the --brand* CSS variables below (mapped to `brand` utilities in tailwind.config).
- * Default = LeadFlow teal. The white-label client portal (R3) overrides --brand on a wrapper element
- * to re-theme everything inside it — no component change needed.
+ * Minimal-premium design system (UI overhaul, 2026-06-29). SUPERSEDES the "Fresh" teal/rounded R1.
+ * Neutral, near-white, hairline-bordered, data-forward (Linear / Stripe / Vercel energy).
+ *
+ * The accent stays a re-themable TOKEN, not a literal: every kit component reads the --brand* CSS
+ * variables (mapped to `brand` utilities in tailwind.config). Default = a restrained indigo. The
+ * white-label client portal overrides --brand on a wrapper element to re-theme everything inside it
+ * — no component change needed.
+ *
+ * Neutrals are tokens too (--surface-*, --border*, --text-*), mapped to surface/ink/hairline
+ * utilities, so the whole chrome is consistent and tunable from one place.
  */
 :root {
   color-scheme: light;
 
-  --brand: #1d9e75; /* teal-600 — primary accent */
-  --brand-strong: #0f6e56; /* teal-700 — hover / emphasis */
-  --brand-fg: #ffffff; /* readable text/icon on a brand fill */
-  --brand-tint: #e1f5ee; /* soft accent background */
-  --brand-tint-fg: #0f6e56; /* readable text on the tint */
+  /* Neutral surfaces / borders / text — the bulk of the UI. */
+  --surface-0: #fafafa; /* page canvas */
+  --surface-1: #f4f4f5; /* subtle inset / hover */
+  --surface-2: #ffffff; /* cards, panels, rows */
+  --border: #e8e8ec; /* 0.5px hairline */
+  --border-strong: #d6d6db;
+  --text-primary: #18181b;
+  --text-secondary: #52525b;
+  --text-muted: #8b8b93;
+
+  /* ONE quiet accent (indigo) — a token, recolored per client in the white-label portal. */
+  --brand: #4f46e5;
+  --brand-strong: #4338ca;
+  --brand-fg: #ffffff;
+  --brand-tint: #eef2ff;
+  --brand-tint-fg: #4338ca;
 }
 
 body {
-  /* Warm neutral canvas (stone), not pure-cool slate. */
-  @apply bg-stone-50 text-stone-900;
+  @apply bg-surface-sunken text-ink;
+}
+
+/* Metrics/figures read with aligned, tabular numerals. */
+.tabular-nums,
+.tabular {
+  font-variant-numeric: tabular-nums;
 }
 
 /* Subtle, consistent brand focus ring across the app's interactive elements. */
 @layer base {
   *:focus-visible {
-    @apply outline-none ring-2 ring-offset-2 ring-offset-white;
+    @apply outline-none ring-2 ring-offset-2;
     --tw-ring-color: var(--brand);
+    --tw-ring-offset-color: var(--surface-2);
   }
 }

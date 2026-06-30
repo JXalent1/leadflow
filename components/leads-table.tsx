@@ -1,5 +1,6 @@
 import type { LeadRow } from "@/lib/dashboard-db";
 import { displayName, formatTime } from "./dashboard-utils";
+import StatusDot from "./ui/status-dot";
 
 /**
  * Leads table — Talan's primary surface. Each row is an interested reply with the
@@ -9,24 +10,25 @@ import { displayName, formatTime } from "./dashboard-utils";
  */
 export default function LeadsTable({ leads }: { leads: LeadRow[] }) {
   return (
-    <section className="overflow-hidden rounded-xl border border-emerald-300 bg-white shadow-sm">
-      <div className="flex items-center justify-between border-b border-emerald-200 bg-emerald-50 px-4 py-3">
-        <h2 className="text-base font-semibold text-emerald-900">
+    <section className="overflow-hidden rounded-2xl border bg-surface">
+      <div className="flex items-center justify-between border-b px-4 py-3">
+        <h2 className="flex items-center gap-2 text-base font-medium tracking-tight text-brand-strong">
+          <StatusDot tone="success" />
           Leads ({leads.length})
         </h2>
-        <a href="/inbox" className="text-xs font-medium text-emerald-700 hover:text-emerald-900">
+        <a href="/inbox" className="text-xs font-medium text-brand-strong hover:text-brand">
           Open inbox →
         </a>
       </div>
 
       {leads.length === 0 ? (
-        <p className="px-4 py-8 text-center text-sm text-slate-500">
+        <p className="px-4 py-8 text-center text-sm text-ink-subtle">
           No leads yet. Interested replies will appear here.
         </p>
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm">
-            <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
+            <thead className="bg-surface-muted text-xs text-ink-subtle">
               <tr>
                 <th className="px-4 py-2 font-medium">Name</th>
                 <th className="px-4 py-2 font-medium">Address</th>
@@ -37,41 +39,39 @@ export default function LeadsTable({ leads }: { leads: LeadRow[] }) {
                 <th className="px-4 py-2 font-medium"></th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100">
+            <tbody className="divide-y">
               {leads.map((l) => (
                 <tr key={l.id} className="align-top">
-                  <td className="px-4 py-3 font-medium">
+                  <td className="px-4 py-3 font-medium text-ink">
                     {displayName(l.first_name, l.last_name, l.phone)}
                     {l.phone ? (
-                      <div className="text-xs font-normal text-slate-400">{l.phone}</div>
+                      <div className="text-xs font-normal text-ink-subtle">{l.phone}</div>
                     ) : null}
                   </td>
-                  <td className="px-4 py-3 text-slate-700">{l.address ?? "—"}</td>
-                  <td className="px-4 py-3 text-slate-700">
+                  <td className="px-4 py-3 text-ink-muted">{l.address ?? "—"}</td>
+                  <td className="px-4 py-3 text-ink-muted">
                     {l.reply_text ? `"${l.reply_text}"` : "—"}
                   </td>
                   <td className="px-4 py-3 whitespace-nowrap">
-                    <span className="rounded bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-700">
-                      {l.status}
-                    </span>
+                    <StatusDot tone="neutral">{l.status}</StatusDot>
                   </td>
-                  <td className="px-4 py-3 whitespace-nowrap text-slate-500">
+                  <td className="px-4 py-3 whitespace-nowrap text-ink-subtle">
                     {formatTime(l.created_at)}
                   </td>
                   <td className="px-4 py-3 whitespace-nowrap">
                     {l.forwarded ? (
-                      <span className="text-emerald-600">
-                        ✓ sent{l.forwarded_at ? ` · ${formatTime(l.forwarded_at)}` : ""}
-                      </span>
+                      <StatusDot tone="success">
+                        sent{l.forwarded_at ? ` · ${formatTime(l.forwarded_at)}` : ""}
+                      </StatusDot>
                     ) : (
-                      <span className="font-medium text-amber-600">⚠ not sent</span>
+                      <StatusDot tone="warning">not sent</StatusDot>
                     )}
                   </td>
                   <td className="px-4 py-3 whitespace-nowrap">
                     {l.contact_id ? (
                       <a
                         href={`/inbox?contact=${l.contact_id}`}
-                        className="text-xs font-medium text-emerald-700 hover:text-emerald-900"
+                        className="text-xs font-medium text-brand-strong hover:text-brand"
                       >
                         Open →
                       </a>

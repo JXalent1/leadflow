@@ -21,8 +21,8 @@ export default function LoginForm({
     <Card className="p-6">
       <form action={action} className="space-y-4">
         <div>
-          <h1 className="text-lg font-medium text-stone-900">Sign in</h1>
-          <p className="mt-0.5 text-sm text-stone-500">
+          <h1 className="text-lg font-medium tracking-tight text-ink">Sign in</h1>
+          <p className="mt-0.5 text-sm text-ink-subtle">
             Use the credentials for your account.
           </p>
         </div>

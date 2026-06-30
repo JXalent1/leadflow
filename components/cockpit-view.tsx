@@ -1,29 +1,31 @@
 /**
  * components/cockpit-view.tsx — the operator cockpit (read-only, server-rendered). (v2 Module V4;
- * V7 redesign.)
+ * minimal-premium overhaul.)
  *
- * Renders every client at a glance, centered on leads-this-cycle vs. their lead guarantee, with the
- * behind/on-track/met pace flag and a quick campaign-health read. Clicking a client opens their
- * scoped dashboard (?clientId=). No writes, no client-facing data — operator surface only. The
- * behind-pace-first ordering comes from getCockpitData (unchanged).
+ * A KPI row of bordered stat cells + a dense clients table: Client / Pace (dot + muted label) /
+ * Leads·cycle (thin progress + N/T) / Sent / Opt-out. Behind-pace-first ordering comes from
+ * getCockpitData (unchanged); clicking a row opens that client's scoped dashboard (?clientId=). Each
+ * row also carries the per-client Edit launcher + track-only billing (stop-propagating so they don't
+ * trigger the row's drill-through). No writes, no client-facing data — operator surface only.
  */
 
 import type { CockpitData, CockpitRow } from "@/lib/cockpit";
 import type { Pace } from "@/lib/billing-cycle";
 import type { Client } from "@/lib/clients";
-import type { Tone } from "./ui/badge";
+import type { DotTone } from "./ui/status-dot";
 import Card from "./ui/card";
 import Badge from "./ui/badge";
 import ProgressBar from "./ui/progress-bar";
 import StatTile from "./ui/stat-tile";
-import { CheckIcon, PauseIcon, SparkleIcon } from "./ui/icons";
+import StatusDot from "./ui/status-dot";
+import { PauseIcon } from "./ui/icons";
 import CockpitBilling from "./cockpit-billing";
 import { ClientFormLauncher, type ClientFormValues } from "./client-form";
 
-const PACE: Record<Pace, { text: string; tone: Tone; bar: "success" | "warning" | "danger" }> = {
-  behind: { text: "Behind pace", tone: "warning", bar: "warning" },
-  on_track: { text: "On track", tone: "success", bar: "success" },
-  met: { text: "Met", tone: "success", bar: "success" },
+const PACE: Record<Pace, { text: string; dot: DotTone; bar: "success" | "warning" | "danger" }> = {
+  behind: { text: "Behind pace", dot: "warning", bar: "warning" },
+  on_track: { text: "On track", dot: "success", bar: "success" },
+  met: { text: "Met", dot: "success", bar: "success" },
 };
 
 /** Map a full Client record to the serializable subset the Add/Edit form reads/writes. */
@@ -74,7 +76,7 @@ export default function CockpitView({
 
   return (
     <section className="flex flex-col gap-6">
-      {/* Summary strip */}
+      {/* KPI row */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
         <StatTile label="Clients" value={data.totalClients} />
         <StatTile
@@ -85,103 +87,127 @@ export default function CockpitView({
         <StatTile label="On pace" value={onPace} tone={onPace > 0 ? "lead" : "default"} />
       </div>
 
-      <div className="flex justify-end">
+      <div className="flex items-center justify-between gap-3">
+        <h2 className="text-sm font-medium text-ink">Clients</h2>
         <ClientFormLauncher mode="create" />
       </div>
 
-      <div className="grid gap-4">
-        {data.rows.map((row) => (
-          <ClientCard key={row.clientId} row={row} config={configById.get(row.clientId)} />
-        ))}
-      </div>
+      {/* Dense clients table */}
+      <Card padded={false}>
+        {/* Column header (sm+) */}
+        <div className="hidden border-b px-4 py-2.5 text-xs text-ink-subtle sm:grid sm:grid-cols-[minmax(0,2.2fr)_minmax(0,1fr)_minmax(0,1.8fr)_minmax(0,0.7fr)_minmax(0,0.7fr)] sm:gap-4">
+          <span>Client</span>
+          <span>Pace</span>
+          <span>Leads · cycle</span>
+          <span className="text-right">Sent</span>
+          <span className="text-right">Opt-out</span>
+        </div>
+
+        <div className="divide-y">
+          {data.rows.map((row) => (
+            <ClientRow key={row.clientId} row={row} config={configById.get(row.clientId)} />
+          ))}
+        </div>
+      </Card>
     </section>
   );
 }
 
-function ClientCard({ row, config }: { row: CockpitRow; config?: ClientFormValues }) {
+function ClientRow({ row, config }: { row: CockpitRow; config?: ClientFormValues }) {
   const pace = PACE[row.pace];
   const pct = row.guarantee > 0 ? Math.min(100, Math.round((row.leads / row.guarantee) * 100)) : 0;
+  const initial = row.name.trim().charAt(0).toUpperCase() || "?";
 
   return (
-    <Card href={`/dashboard?clientId=${row.clientId}`} interactive>
-      <div className="flex items-start justify-between gap-4">
-        <div className="flex min-w-0 items-start gap-3">
-          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-brand-tint text-brand-tint-fg">
-            <SparkleIcon className="h-5 w-5" />
+    <a
+      href={`/dashboard?clientId=${row.clientId}`}
+      className="block px-4 py-3.5 transition-colors hover:bg-surface-muted"
+    >
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,2.2fr)_minmax(0,1fr)_minmax(0,1.8fr)_minmax(0,0.7fr)_minmax(0,0.7fr)] sm:items-center sm:gap-4">
+        {/* Client */}
+        <div className="flex min-w-0 items-center gap-3">
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-surface-muted text-xs font-medium text-ink-muted">
+            {initial}
           </span>
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <h2 className="truncate text-lg font-medium text-stone-900">{row.name}</h2>
+              <span className="truncate text-sm font-medium text-ink">{row.name}</span>
               {row.status !== "active" ? (
                 <Badge tone="neutral" className="capitalize">
                   {row.status}
                 </Badge>
               ) : null}
             </div>
-            <p className="mt-0.5 text-xs text-stone-500">
-              {row.daysLeft} day{row.daysLeft === 1 ? "" : "s"} left in cycle
+            <p className="mt-0.5 text-xs text-ink-subtle">
+              {row.daysLeft} day{row.daysLeft === 1 ? "" : "s"} left
             </p>
           </div>
         </div>
-        <div className="flex shrink-0 flex-col items-end gap-1.5">
-          <div className="flex items-center gap-2">
-            {config ? (
-              <ClientFormLauncher
-                mode="edit"
-                client={config}
-                triggerLabel="Edit"
-                triggerVariant="secondary"
-                triggerSize="sm"
-                stopPropagation
-              />
+
+        {/* Pace */}
+        <div className="flex items-center">
+          <StatusDot tone={pace.dot}>{pace.text}</StatusDot>
+        </div>
+
+        {/* Leads · cycle */}
+        <div className="min-w-0">
+          <div className="flex items-baseline justify-between gap-2 text-sm">
+            <span className="tabular-nums text-ink">
+              <span className="font-medium">{row.leads}</span>
+              <span className="text-ink-subtle"> / {row.guarantee}</span>
+            </span>
+            {row.pace === "behind" ? (
+              <span className="text-xs tabular-nums text-amber-700">~{row.expected} expected</span>
             ) : null}
-            <Badge tone={pace.tone}>
-              {row.pace === "met" ? <CheckIcon className="h-3 w-3" /> : null}
-              {pace.text}
-            </Badge>
           </div>
-          {row.autoPaused ? (
-            <Badge tone="brand">
-              <PauseIcon className="h-3 w-3" />
-              Auto-paused · {row.leadsThisPeriod}/{row.target} this {row.targetPeriod}
-            </Badge>
-          ) : null}
+          <ProgressBar value={pct} tone={pace.bar} className="mt-1.5" />
+        </div>
+
+        {/* Sent */}
+        <div className="text-sm tabular-nums text-ink-muted sm:text-right">
+          <span className="text-ink-subtle sm:hidden">Sent: </span>
+          {row.sent.toLocaleString()}
+        </div>
+
+        {/* Opt-out */}
+        <div className="text-sm tabular-nums text-ink-muted sm:text-right">
+          <span className="text-ink-subtle sm:hidden">Opt-out: </span>
+          {row.optOutRatePct}%
         </div>
       </div>
 
-      <div className="mt-4 flex items-baseline gap-2">
-        <span className="text-3xl font-medium tabular-nums text-stone-900">{row.leads}</span>
-        <span className="text-lg text-stone-400">/ {row.guarantee} leads</span>
-        {row.pace === "behind" ? (
-          <span className="ml-auto text-xs font-medium text-amber-700">
-            ~{row.expected} expected by now
-          </span>
+      {/* Secondary line: reply rate · auto-pause · billing + edit (kept for behavior parity) */}
+      <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 border-t pt-3 text-xs text-ink-subtle">
+        <span className="tabular-nums">Reply rate {row.replyRatePct}%</span>
+        {row.autoPaused ? (
+          <Badge tone="brand">
+            <PauseIcon className="h-3 w-3" />
+            Auto-paused · {row.leadsThisPeriod}/{row.target} this {row.targetPeriod}
+          </Badge>
         ) : null}
+
+        <div className="ml-auto flex items-center gap-2">
+          {config ? (
+            <ClientFormLauncher
+              mode="edit"
+              client={config}
+              triggerLabel="Edit"
+              triggerVariant="secondary"
+              triggerSize="sm"
+              stopPropagation
+            />
+          ) : null}
+        </div>
+
+        <div className="w-full">
+          <CockpitBilling
+            clientId={row.clientId}
+            status={row.invoiceStatus}
+            amountCents={row.planAmountCents}
+            nextBillDate={row.nextBillDate}
+          />
+        </div>
       </div>
-
-      <ProgressBar value={pct} tone={pace.bar} className="mt-2.5" />
-
-      <div className="mt-4 grid grid-cols-3 gap-3">
-        <Health label="Sent this cycle" value={row.sent.toLocaleString()} />
-        <Health label="Reply rate" value={`${row.replyRatePct}%`} />
-        <Health label="Opt-out rate" value={`${row.optOutRatePct}%`} />
-      </div>
-
-      <CockpitBilling
-        clientId={row.clientId}
-        status={row.invoiceStatus}
-        amountCents={row.planAmountCents}
-        nextBillDate={row.nextBillDate}
-      />
-    </Card>
-  );
-}
-
-function Health({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-xl bg-stone-50 px-3 py-2">
-      <div className="text-base font-medium tabular-nums text-stone-900">{value}</div>
-      <div className="mt-0.5 text-[11px] text-stone-500">{label}</div>
-    </div>
+    </a>
   );
 }

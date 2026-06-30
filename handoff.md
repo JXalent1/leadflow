@@ -15,6 +15,64 @@ client) or if the id is < 100000. Cleanups now also drop `trace_jobs`/`scrub_job
 a destructive live-DB fixture without checking it can't touch a real tenant.**
 
 
+_Last updated: 2026-06-29 (Claude Code — UI/UX overhaul: a minimal-premium neutral design system
+supersedes the "Fresh"/teal R1 look across EVERY screen; accent moved teal→indigo, still a re-themable
+`--brand` token; FRONT-END only.)_
+
+## ▶ UI/UX overhaul — minimal-premium across all screens (2026-06-29) — DONE (on `build/ui-overhaul`, PR not merged)
+Replaced the "Fresh" teal/rounded R1 look (read cheesy) with a restrained, neutral, data-forward,
+premium system (Linear / Stripe / Vercel). **PRESENTATION ONLY — NO app logic / routes / queries /
+suppression / eligibility / send path / auth / DB / component props changed.** Runs in parallel with
+the conversational-AI prompt (backend-only; no file overlap).
+- **Neutrals are now TOKENS.** `app/globals.css :root` adds `--surface-0` (page) / `--surface-1`
+  (inset/hover) / `--surface-2` (cards) / `--border` / `--border-strong` / `--text-primary` /
+  `--text-secondary` / `--text-muted`; `tailwind.config.ts` maps `surface` / `hairline` / `ink` color
+  families to them. Chrome uses `bg-surface` / `bg-surface-sunken` / `bg-surface-muted` / `border`
+  (now a 0.5px hairline, default color `var(--border)`) / `border-hairline-strong` / `text-ink` /
+  `text-ink-muted` / `text-ink-subtle`. ZERO literal slate/stone/neutral classes remain.
+- **Accent moved teal→indigo, STILL A TOKEN (load-bearing for white-label).** `--brand` `#4f46e5` /
+  `--brand-strong` `#4338ca` / `--brand-tint` `#eef2ff` / `--brand-tint-fg` `#4338ca` / `--brand-fg`
+  `#fff`. Every kit component reads `bg-brand`/`text-brand-strong`/`ring-brand-tint`, so **overriding
+  `--brand*` on a wrapper re-themes the subtree** — proven in compiled CSS (`.bg-brand{background-color:
+  var(--brand)}` etc., `:root` holds the indigo default); the client portal's hero metric, progress
+  fill, "met" chip, target-met note + tel links are all brand-token-driven, so a per-client `--brand`
+  override flips the portal accent with no component change.
+- **GOTCHA (carried from R1):** `--brand*`/surface/ink are hex CSS vars, so Tailwind `/opacity`
+  modifiers do NOT apply. Modal backdrops therefore use `bg-black/40` (NOT `bg-ink/40` — that renders
+  opaque); the app header is solid `bg-surface` (not `bg-surface/85`). Don't reintroduce `/opacity` on
+  a token utility expecting alpha.
+- **Shape/type:** `borderWidth.DEFAULT='0.5px'` (hairlines everywhere incl. `divide-y`); radii remapped
+  in config — `rounded-2xl`=10px (cards), `rounded-lg`/`rounded-xl`=8px (controls); **no shadows**
+  (every `shadow*` removed; only the focus ring); Inter **two weights** (`font-semibold`/`font-bold`→
+  `font-medium`); **sentence case** (all `uppercase`/`tracking-wide` labels removed); tabular-nums on
+  figures.
+- **Density / new primitive:** `components/ui/status-dot.tsx` (a small colored dot + muted label,
+  tone-based, brand tone re-themable) replaces loud status pills in dense lists/tables. The wordmark
+  dropped the teal droplet for a restrained neutral mark (ink square + flow stroke).
+- **Cockpit re-layout:** `components/cockpit-view.tsx` is now a **dense clients table** (a Card holding
+  hairline-divided clickable rows) — columns Client (monogram + name + days-left) / Pace (StatusDot) /
+  Leads·cycle (thin ProgressBar + N/T) / Sent / Opt-out, with a secondary line carrying reply-rate +
+  auto-pause + the Edit launcher + CockpitBilling. Behind-pace-first sort + per-row click-through to
+  `/dashboard?clientId=N` unchanged (the row is an `<a>`; Edit/billing stop-propagate, same pattern as
+  the old Card).
+- **Restyled (all SAME props/behavior):** kit `components/ui/*` (button/card/stat-tile/badge/field/
+  toggle/progress-bar/app-header/wordmark + new status-dot); login; cockpit (`page.tsx`,`cockpit-view`,
+  `cockpit-billing`); dashboard (`dashboard-client`,`count-cards`,`send-progress`,`pipeline-runner`,
+  `campaign-controls`,`campaign-bar`); inbox (`components/inbox/*`); portal (`app/client/page.tsx`,
+  `portal-client`); `client-form`; `leads-table`/`reply-feed`/`opt-out-list`.
+- **Green:** `tsc` clean, `npm run build` green, `npm test` = **258**. The live-DB fixtures
+  (`test:isolation`/`access`/`cockpit`/`auto-pause`/`passthrough`/`optout`/`forward`) need Neon creds
+  (absent in the build session) — they assert backend logic this change didn't touch; rerun before merge.
+- **Note:** the portal is white-label-READY (tokens + mechanism), but `lib/portal.ts` does NOT expose a
+  per-client brand hex, so no `--brand` data-wiring was added (would be a query change, out of scope).
+  Wiring a per-client accent from `clients.branding` onto a `style={{['--brand']: hex}}` wrapper is a
+  small follow-up when that data is plumbed into `getPortalData`.
+
+_Earlier handoff entries below._
+
+_(R1 entry, 2026-06-28 — the "Fresh" teal/warm/rounded design system replaced the V7 indigo look across
+login/cockpit/dashboard; superseded by the overhaul above.)_
+
 _Last updated: 2026-06-29 (Claude Code — Conversational AI lead-qualifier BACKEND built on
 `build/ai-responder`; PR open into `main`, NOT merged — awaiting the 3-reviewer compliance/correctness/
 security pass. Runs in parallel with the UI-overhaul stream; no file overlap.)_

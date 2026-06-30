@@ -96,23 +96,23 @@ export default function CampaignControls({ scope, windowLabel, onChanged }: Prop
     <Card padded={false}>
       <button
         onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center justify-between gap-3 rounded-2xl px-4 py-3 text-left transition-colors hover:bg-stone-50"
+        className="flex w-full items-center justify-between gap-3 rounded-2xl px-4 py-3 text-left transition-colors hover:bg-surface-muted"
         aria-expanded={open}
       >
         <div>
-          <h2 className="text-sm font-medium text-stone-900">Manual stage controls</h2>
-          <p className="text-xs text-stone-500">
+          <h2 className="text-sm font-medium text-ink">Manual stage controls</h2>
+          <p className="text-xs text-ink-subtle">
             Advanced — run a single stage by hand. None of these send SMS.
           </p>
         </div>
         <ChevronDownIcon
-          className={`h-5 w-5 shrink-0 text-stone-400 transition-transform ${open ? "rotate-180" : ""}`}
+          className={`h-5 w-5 shrink-0 text-ink-subtle transition-transform ${open ? "rotate-180" : ""}`}
         />
       </button>
 
       {open ? (
-        <div className="border-t border-stone-100 p-4">
-          <p className="mb-3 text-xs text-stone-500">
+        <div className="border-t p-4">
+          <p className="mb-3 text-xs text-ink-subtle">
             The send-nothing dry run previews eligibility. None of these send SMS — use “Run
             pipeline” above for the real, paced send.
           </p>

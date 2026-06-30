@@ -34,7 +34,7 @@ export default function ReplyBox({
 
   if (suppressed) {
     return (
-      <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+      <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
         This contact opted out — replies are disabled. We never message a suppressed number.
       </div>
     );
@@ -82,16 +82,16 @@ export default function ReplyBox({
         onChange={(e) => setText(e.target.value)}
         placeholder="Type a reply…"
         rows={3}
-        className="w-full resize-y rounded-md border border-neutral-300 px-3 py-2 text-sm outline-none focus:border-neutral-900"
+        className="w-full resize-y rounded-lg border border-hairline-strong bg-surface px-3 py-2 text-sm text-ink placeholder:text-ink-subtle outline-none focus:border-brand"
       />
       <div className="flex items-center justify-between">
-        <span className="text-xs text-neutral-400">
+        <span className="text-xs text-ink-subtle">
           {seg ? `${seg.length} chars · ${seg.segments} segment${seg.segments === 1 ? "" : "s"}` : " "}
         </span>
         <button
           onClick={send}
           disabled={sending || !text.trim()}
-          className="rounded-md bg-neutral-900 px-4 py-1.5 text-sm font-medium text-white hover:bg-neutral-700 disabled:cursor-not-allowed disabled:opacity-40"
+          className="rounded-lg bg-brand px-4 py-1.5 text-sm font-medium text-brand-fg hover:bg-brand-strong disabled:cursor-not-allowed disabled:opacity-40"
         >
           {sending ? "Sending…" : "Send reply"}
         </button>

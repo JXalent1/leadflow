@@ -74,10 +74,10 @@ export default function CockpitBilling({
 
   return (
     <div
-      className="mt-4 flex flex-wrap items-center gap-2 border-t border-stone-100 pt-3 text-xs"
+      className="flex flex-wrap items-center gap-2 text-xs"
       onClick={(e) => e.stopPropagation()}
     >
-      <span className="text-stone-500">
+      <span className="text-ink-subtle">
         {fmtAmount(amountCents)}/mo · next bill {fmtDate(nextBillDate)}
       </span>
       <Badge tone={pill.tone}>{pill.text}</Badge>

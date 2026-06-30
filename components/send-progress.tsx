@@ -34,13 +34,13 @@ export default function SendProgress({
       <ProgressBar value={pct} tone="brand" height="h-3" />
 
       <div className="mt-2.5 flex flex-wrap items-center justify-between gap-2 text-xs">
-        <span className="font-medium text-stone-600">{pct}% of known backlog sent</span>
-        <span className="text-stone-500">
+        <span className="font-medium text-ink-muted">{pct}% of known backlog sent</span>
+        <span className="text-ink-subtle">
           {counts.sent.toLocaleString()} sent · {counts.eligible.toLocaleString()} eligible ·{" "}
           {counts.inFlight} in flight · {counts.failed} failed
         </span>
       </div>
-      <p className="mt-1 text-[11px] text-stone-400">Send window {sendWindow.label}</p>
+      <p className="mt-1 text-[11px] text-ink-subtle">Send window {sendWindow.label}</p>
     </Card>
   );
 }

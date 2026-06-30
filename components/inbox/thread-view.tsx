@@ -2,6 +2,7 @@
 
 import type { ThreadDetail } from "@/lib/inbox-db";
 import { displayName, formatTime } from "@/components/dashboard-utils";
+import StatusDot from "@/components/ui/status-dot";
 import ReplyBox from "./reply-box";
 import LeadStatus from "./lead-status";
 
@@ -30,16 +31,16 @@ export default function ThreadView({
 }) {
   if (contactId == null) {
     return (
-      <section className="flex min-h-[60vh] items-center justify-center rounded-lg border border-neutral-200 bg-white">
-        <p className="text-sm text-neutral-500">Select a conversation to view it.</p>
+      <section className="flex min-h-[60vh] items-center justify-center rounded-2xl border bg-surface">
+        <p className="text-sm text-ink-subtle">Select a conversation to view it.</p>
       </section>
     );
   }
 
   if (!thread) {
     return (
-      <section className="flex min-h-[60vh] items-center justify-center rounded-lg border border-neutral-200 bg-white">
-        <p className="text-sm text-neutral-500">{loading ? "Loading…" : "Thread not found."}</p>
+      <section className="flex min-h-[60vh] items-center justify-center rounded-2xl border bg-surface">
+        <p className="text-sm text-ink-subtle">{loading ? "Loading…" : "Thread not found."}</p>
       </section>
     );
   }
@@ -47,31 +48,29 @@ export default function ThreadView({
   const { contact, lead, messages } = thread;
 
   return (
-    <section className="flex min-h-[60vh] flex-col rounded-lg border border-neutral-200 bg-white">
+    <section className="flex min-h-[60vh] flex-col rounded-2xl border bg-surface">
       {/* Header */}
-      <div className="border-b border-neutral-200 px-4 py-3">
+      <div className="border-b px-4 py-3">
         <div className="flex items-center justify-between gap-2">
-          <h2 className="text-base font-semibold">
+          <h2 className="text-base font-medium text-ink">
             {displayName(contact.first_name, contact.last_name, contact.phone)}
           </h2>
           {contact.suppressed ? (
-            <span className="rounded bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700">
-              opted out
-            </span>
+            <StatusDot tone="danger">opted out</StatusDot>
           ) : null}
         </div>
-        <p className="text-xs text-neutral-500">
+        <p className="text-xs text-ink-subtle">
           {contact.phone ?? "no phone"}
           {contact.address ? ` · ${contact.address}` : ""}
         </p>
       </div>
 
       {/* Lead status / notes */}
-      <div className="border-b border-neutral-200 px-4 py-3">
+      <div className="border-b px-4 py-3">
         {lead ? (
           <LeadStatus lead={lead} scope={scope} onChanged={onChanged} />
         ) : (
-          <p className="text-xs text-neutral-400">
+          <p className="text-xs text-ink-subtle">
             No lead record for this contact yet (created automatically from an interested reply).
           </p>
         )}
@@ -80,7 +79,7 @@ export default function ThreadView({
       {/* Message history */}
       <div className="flex-1 space-y-3 overflow-y-auto px-4 py-4">
         {messages.length === 0 ? (
-          <p className="text-center text-sm text-neutral-400">No messages yet.</p>
+          <p className="text-center text-sm text-ink-subtle">No messages yet.</p>
         ) : (
           messages.map((m) => {
             const outbound = m.direction === "outbound";
@@ -89,14 +88,14 @@ export default function ThreadView({
                 <div
                   className={`max-w-[75%] rounded-lg px-3 py-2 text-sm ${
                     outbound
-                      ? "bg-neutral-900 text-white"
-                      : "border border-neutral-200 bg-neutral-50 text-neutral-800"
+                      ? "bg-ink text-surface"
+                      : "border bg-surface-muted text-ink"
                   }`}
                 >
                   <p className="whitespace-pre-wrap break-words">{m.body}</p>
                   <div
                     className={`mt-1 text-[11px] ${
-                      outbound ? "text-neutral-400" : "text-neutral-400"
+                      outbound ? "text-ink-subtle" : "text-ink-subtle"
                     }`}
                   >
                     {formatTime(m.created_at)}
@@ -110,7 +109,7 @@ export default function ThreadView({
       </div>
 
       {/* Reply box */}
-      <div className="border-t border-neutral-200 px-4 py-3">
+      <div className="border-t px-4 py-3">
         <ReplyBox
           contactId={contact.id}
           suppressed={contact.suppressed}

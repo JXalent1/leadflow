@@ -295,7 +295,7 @@ export default function PipelineRunner({
         <div className="flex items-end gap-2">
           {/* Live send-rate control — change takes effect on the next batch, no redeploy. */}
           <div className="flex flex-col gap-1">
-            <label htmlFor="rate-input" className="text-xs font-medium text-stone-500">
+            <label htmlFor="rate-input" className="text-xs font-medium text-ink-subtle">
               Rate/hr
             </label>
             <Input
@@ -345,7 +345,7 @@ export default function PipelineRunner({
       ) : null}
 
       {!withinWindow ? (
-        <p className="mt-2 text-xs text-stone-400">
+        <p className="mt-2 text-xs text-ink-subtle">
           Note: the send window ({windowLabel}) is closed — trace + scrub will run now; the send
           stage will pause until the window opens.
         </p>
@@ -393,17 +393,17 @@ function ConfirmModal({
 }) {
   const armed = confirmText.trim().toUpperCase() === "CONFIRM";
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-stone-900/40 px-4 backdrop-blur-sm">
-      <div className="w-full max-w-md rounded-2xl border border-stone-200 bg-white p-6 shadow-2xl">
-        <h3 className="text-lg font-medium text-stone-900">Run the full pipeline?</h3>
-        <p className="mt-2 text-sm text-stone-600">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4 backdrop-blur-sm">
+      <div className="w-full max-w-md rounded-2xl border bg-surface p-6">
+        <h3 className="text-lg font-medium text-ink">Run the full pipeline?</h3>
+        <p className="mt-2 text-sm text-ink-muted">
           This will skip-trace, DNC/litigator-scrub, then send{" "}
-          <span className="font-medium text-stone-900">real SMS</span> to every eligible contact in
+          <span className="font-medium text-ink">real SMS</span> to every eligible contact in
           this campaign (paced, within {windowLabel}). It spends Tracerfy credits and sends real
           messages, and cannot be undone. It runs to completion on its own and is resumable.
         </p>
-        <p className="mt-3 text-sm text-stone-600">
-          Type <span className="font-mono font-medium text-stone-900">CONFIRM</span> to proceed:
+        <p className="mt-3 text-sm text-ink-muted">
+          Type <span className="font-mono font-medium text-ink">CONFIRM</span> to proceed:
         </p>
         <Input
           autoFocus

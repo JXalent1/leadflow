@@ -63,6 +63,8 @@ export interface DashboardData {
   activeRun: boolean;
   /** The in-flight run's id, so the client-side driver can RESUME/continue its OWN run. */
   activeRunId: number | null;
+  /** Whether server-side sending is armed for this campaign (the cron is draining it). */
+  autoSend: boolean;
   ratePerHour: number;
   /** V6 deliver-then-stop status for this client's current target period. */
   autoPause: {
@@ -134,6 +136,7 @@ export async function getDashboardData(client: Client, campaign: Campaign): Prom
     sendWindow: { within: withinSendWindow(new Date(), window), label: sendWindowLabel(window) },
     activeRun: activeRun !== null,
     activeRunId: activeRun ? activeRun.id : null,
+    autoSend: campaign.auto_send,
     ratePerHour: sendRatePerHour(client.send_rate_per_hour),
     autoPause: {
       target: targetStatus.target,

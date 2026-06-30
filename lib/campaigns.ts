@@ -43,6 +43,8 @@ export interface Campaign {
   status: string;
   message_template: string | null;
   scrub_mode: ScrubMode;
+  /** True while the operator has this campaign actively sending — the cron drains it server-side. */
+  auto_send: boolean;
   created_at: string;
 }
 
@@ -59,6 +61,7 @@ function toCampaign(r: Record<string, unknown>): Campaign {
     status: String(r.status),
     message_template: (r.message_template as string | null) ?? null,
     scrub_mode: isScrubMode(r.scrub_mode) ? r.scrub_mode : "vendor",
+    auto_send: r.auto_send === true,
     created_at: String(r.created_at),
   };
 }
@@ -131,6 +134,48 @@ export async function setCampaignStatus(
   await sql`
     UPDATE campaigns SET status = ${status} WHERE id = ${campaignId} AND client_id = ${clientId}
   `;
+}
+
+/**
+ * Set a campaign's auto_send flag, scoped to its client. (Server-side sender, 2026-06-30.)
+ *
+ * `true` arms server-side sending: the per-minute cron (/api/cron/send) then drives this campaign's
+ * remaining eligible contacts to completion through the SAME getEligibleContacts + atomic
+ * claimForSend + send-window path, so the browser tab no longer has to stay open. `false` pauses it
+ * (the cron stops driving it). This flag is a driver switch ONLY — it never relaxes suppression,
+ * eligibility, or the send window, which still gate every batch. Returns true if a row was updated.
+ */
+export async function setCampaignAutoSend(
+  clientId: number,
+  campaignId: number,
+  on: boolean
+): Promise<boolean> {
+  const rows = await sql`
+    UPDATE campaigns SET auto_send = ${on}
+    WHERE id = ${campaignId} AND client_id = ${clientId}
+    RETURNING id
+  `;
+  return rows.length > 0;
+}
+
+/**
+ * Every campaign the cron should drive this tick: auto_send = true AND its client is active.
+ * Returns (clientId, campaignId) pairs across ALL clients — the cron has no operator session, so it
+ * discovers its work from this flag rather than a selected client. A paused client is excluded so
+ * pausing a client also halts its server-side sends. Ordered for stable, fair iteration.
+ */
+export async function getAutoSendTargets(): Promise<{ clientId: number; campaignId: number }[]> {
+  const rows = await sql`
+    SELECT cm.client_id, cm.id AS campaign_id
+    FROM campaigns cm
+    JOIN clients cl ON cl.id = cm.client_id
+    WHERE cm.auto_send = true AND cl.status = 'active'
+    ORDER BY cm.client_id, cm.id
+  `;
+  return (rows as Record<string, unknown>[]).map((r) => ({
+    clientId: Number(r.client_id),
+    campaignId: Number(r.campaign_id),
+  }));
 }
 
 /**

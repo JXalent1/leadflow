@@ -4,6 +4,7 @@ import {
   sendBatchSize,
   clientPacingDelayMs,
   clampSendRate,
+  cronBatchSize,
   MAX_SEND_RATE_PER_HOUR,
   TRACE_BATCH,
   SCRUB_BATCH,
@@ -89,4 +90,34 @@ test("clientPacingDelayMs matches the hourly rate", () => {
 
 test("trace/scrub batch sizes are sane positive constants", () => {
   assert.ok(TRACE_BATCH > 0 && SCRUB_BATCH > 0);
+});
+
+// ---- cronBatchSize: the per-minute server-cron quota (server-side sender) -------------------
+
+test("cronBatchSize is the per-minute quota ~rate/60, floored at 1", () => {
+  assert.equal(cronBatchSize(60), 1); // 60/hr → 1/min
+  assert.equal(cronBatchSize(600), 10); // 600/hr → 10/min
+  assert.equal(cronBatchSize(3600), 60); // 3600/hr → 60/min
+  assert.equal(cronBatchSize(30), 1); // rounds to 1, never 0
+  assert.equal(cronBatchSize(1), 1);
+});
+
+test("cronBatchSize caps at 200 and falls back to rate-60 for bad input", () => {
+  assert.equal(cronBatchSize(12_000), 200); // 200/min cap binds
+  assert.equal(cronBatchSize(MAX_SEND_RATE_PER_HOUR), 200);
+  assert.equal(cronBatchSize(0), 1); // bad input → rate-60 default → 1
+  assert.equal(cronBatchSize(-5), 1);
+  assert.equal(cronBatchSize(Number.NaN), 1);
+});
+
+test("a cron batch lands inside the 1-minute tick (and well under 300s) at every rate", () => {
+  // By construction quota*(3600/rate) ≈ 60s until the 200 cap binds, where it only gets faster.
+  for (const rate of [60, 600, 1000, 3600, 6000, 12_000, 20_000]) {
+    const size = cronBatchSize(rate);
+    const delaySec = 3600 / rate; // within-batch sleep between sends
+    const batchSeconds = (size - 1) * delaySec; // no trailing sleep after the last send
+    assert.ok(size <= 200, `rate ${rate}: cron batch ${size} exceeds 200`);
+    assert.ok(batchSeconds <= 61, `rate ${rate}: cron batch would take ${batchSeconds}s (> ~1 tick)`);
+    assert.ok(batchSeconds < 300, `rate ${rate}: cron batch ${batchSeconds}s exceeds the function limit`);
+  }
 });

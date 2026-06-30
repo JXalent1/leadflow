@@ -16,6 +16,7 @@ export default function ThreadView({
   loading,
   offHours,
   windowLabel,
+  scope,
   onChanged,
 }: {
   contactId: number | null;
@@ -23,6 +24,8 @@ export default function ThreadView({
   loading: boolean;
   offHours: boolean;
   windowLabel: string;
+  /** Query suffix scoping reply/lead writes to the resolved client (e.g. "clientId=2"). (#11) */
+  scope: string;
   onChanged: () => void;
 }) {
   if (contactId == null) {
@@ -66,7 +69,7 @@ export default function ThreadView({
       {/* Lead status / notes */}
       <div className="border-b border-neutral-200 px-4 py-3">
         {lead ? (
-          <LeadStatus lead={lead} onChanged={onChanged} />
+          <LeadStatus lead={lead} scope={scope} onChanged={onChanged} />
         ) : (
           <p className="text-xs text-neutral-400">
             No lead record for this contact yet (created automatically from an interested reply).
@@ -113,6 +116,7 @@ export default function ThreadView({
           suppressed={contact.suppressed}
           offHours={offHours}
           windowLabel={windowLabel}
+          scope={scope}
           onSent={onChanged}
         />
       </div>

@@ -11,9 +11,12 @@ import type { ThreadDetail } from "@/lib/inbox-db";
  */
 export default function LeadStatus({
   lead,
+  scope,
   onChanged,
 }: {
   lead: NonNullable<ThreadDetail["lead"]>;
+  /** Query suffix scoping the lead update to the resolved client (e.g. "clientId=2"). (#11) */
+  scope: string;
   onChanged: () => void;
 }) {
   const [status, setStatus] = useState<string>(lead.status);
@@ -36,7 +39,7 @@ export default function LeadStatus({
     setError(null);
     setSaved(false);
     try {
-      const res = await fetch("/api/leads", {
+      const res = await fetch(`/api/leads?${scope}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ leadId: lead.id, status, notes }),

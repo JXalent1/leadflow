@@ -15,6 +15,7 @@ import {
   type InboundContactLite,
   type InboundDeps,
   type InboundOptions,
+  type InboundOutcome,
 } from "./inbound";
 
 // ---------------------------------------------------------------------------
@@ -39,12 +40,19 @@ interface Calls {
   createLead: Array<{ contactId: number; replyText: string }>;
   forwardLead: Array<{ leadId: number; replyText: string }>;
   logged: Array<{ contactId: number | null; twilioSid: string }>;
+  aiResponder: Array<{ body: string }>;
 }
 
 function makeDeps(opts: {
   contact?: InboundContactLite | null;
   duplicate?: boolean;
   forwardOk?: boolean;
+  /** When set, wires InboundDeps.runAiResponder so we can assert when the AI path fires. */
+  ai?: {
+    /** What the responder returns; if it throws, set `throws`. */
+    outcome?: InboundOutcome | null;
+    throws?: boolean;
+  };
 }): { deps: InboundDeps; calls: Calls } {
   const calls: Calls = {
     recordOptOut: [],
@@ -53,6 +61,7 @@ function makeDeps(opts: {
     createLead: [],
     forwardLead: [],
     logged: [],
+    aiResponder: [],
   };
   const deps: InboundDeps = {
     findContactByPhone: async () => opts.contact ?? null,
@@ -79,6 +88,13 @@ function makeDeps(opts: {
       return opts.forwardOk ?? true;
     },
   };
+  if (opts.ai) {
+    deps.runAiResponder = async (_contact, body) => {
+      calls.aiResponder.push({ body });
+      if (opts.ai!.throws) throw new Error("ai boom");
+      return opts.ai!.outcome ?? null;
+    };
+  }
   return { deps, calls };
 }
 
@@ -318,4 +334,76 @@ test("orphan interested reply (unknown sender): logged only, no lead", async () 
   assert.equal(out.kind, "orphan_logged");
   assert.equal(calls.createLead.length, 0);
   assert.equal(calls.forwardLead.length, 0);
+});
+
+// ===========================================================================
+// AI responder wiring (the deterministic gate ALWAYS precedes the AI)
+// ===========================================================================
+
+test("AI is NEVER invoked on a STOP — opt-out wins, suppression applies, AI never sees it", async () => {
+  const { deps, calls } = makeDeps({ contact: CONTACT, ai: { outcome: { kind: "ai_reply" } } });
+  const out = await processInbound(msg("STOP"), deps, OPTS);
+  assert.equal(out.kind, "opt_out");
+  assert.equal(calls.aiResponder.length, 0, "the AI must never run on an opted-out contact");
+  assert.equal(calls.markSuppressed.length, 1, "STOP still suppresses");
+});
+
+test("AI is NEVER invoked on the configured keyword '2' — opt-out wins, AI never sees it", async () => {
+  const { deps, calls } = makeDeps({ contact: CONTACT, ai: { outcome: { kind: "ai_reply" } } });
+  const out = await processInbound(msg("2"), deps, OPTS_KW2);
+  assert.equal(out.kind, "opt_out");
+  assert.equal(calls.aiResponder.length, 0);
+  assert.equal(calls.markSuppressed.length, 1);
+});
+
+test("AI is NOT invoked on a duplicate (Twilio retry) — it fires at most once per inbound", async () => {
+  const { deps, calls } = makeDeps({ contact: CONTACT, duplicate: true, ai: { outcome: { kind: "ai_reply" } } });
+  const out = await processInbound(msg("yes please"), deps, OPTS);
+  assert.equal(out.kind, "duplicate");
+  assert.equal(calls.aiResponder.length, 0, "no AI on a deduped retry — no double-send");
+});
+
+test("AI is NOT invoked for an orphan (no stored contact) — we only ever text a stored phone", async () => {
+  const { deps, calls } = makeDeps({ contact: null, ai: { outcome: { kind: "ai_reply" } } });
+  const out = await processInbound(msg("yes interested"), deps, OPTS);
+  assert.equal(out.kind, "orphan_logged");
+  assert.equal(calls.aiResponder.length, 0);
+});
+
+test("AI handles the reply → its outcome is returned and the keyword path is skipped", async () => {
+  const { deps, calls } = makeDeps({
+    contact: CONTACT,
+    ai: { outcome: { kind: "ai_lead", leadId: 5, forwarded: true } },
+  });
+  const out = await processInbound(msg("yes, how much for a quote?"), deps, OPTS);
+  assert.equal(out.kind, "ai_lead");
+  assert.equal(calls.aiResponder.length, 1);
+  assert.equal(calls.createLead.length, 0, "the keyword lead path is skipped when the AI handled it");
+});
+
+test("AI returns null (e.g. quiet hours) → falls back to the keyword path", async () => {
+  const { deps, calls } = makeDeps({ contact: CONTACT, ai: { outcome: null } });
+  const out = await processInbound(msg("yes, how much for a quote?"), deps, OPTS);
+  assert.equal(out.kind, "lead", "keyword classifier captures the lead when the AI defers");
+  assert.equal(calls.aiResponder.length, 1);
+  assert.equal(calls.createLead.length, 1);
+});
+
+test("AI error → falls back to keyword path, inbound logged once, no crash, no double-send", async () => {
+  const { deps, calls } = makeDeps({ contact: CONTACT, ai: { throws: true } });
+  const out = await processInbound(msg("yes, how much for a quote?"), deps, OPTS);
+  assert.equal(out.kind, "lead", "an AI error falls back to the keyword classifier");
+  assert.equal(calls.aiResponder.length, 1, "AI was attempted exactly once");
+  assert.equal(calls.logged.length, 1, "inbound logged exactly once");
+  assert.equal(calls.createLead.length, 1, "the lead is still captured");
+});
+
+test("AI 'ai_skipped' (handed off / dismissed / cap) → no keyword fallback, no lead", async () => {
+  const { deps, calls } = makeDeps({
+    contact: CONTACT,
+    ai: { outcome: { kind: "ai_skipped", reason: "handed_off" } },
+  });
+  const out = await processInbound(msg("ok thanks"), deps, OPTS);
+  assert.equal(out.kind, "ai_skipped");
+  assert.equal(calls.createLead.length, 0, "a handed-off thread is not re-captured by the keyword path");
 });

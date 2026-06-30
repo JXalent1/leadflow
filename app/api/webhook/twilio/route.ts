@@ -27,6 +27,7 @@ import {
 } from "@/lib/db";
 import { getClientByInboundNumber, clientSender, clientBizName, type Client } from "@/lib/clients";
 import { forwardLead } from "@/lib/forward";
+import { aiResponderGloballyEnabled, buildRunAiResponder } from "@/lib/ai-responder-wire";
 
 export const dynamic = "force-dynamic";
 
@@ -117,6 +118,14 @@ function buildDeps(client: Client): InboundDeps {
     },
     createLead: (args) => createLead({ clientId, ...args }),
     forwardLead: (args) => forwardLead(args, forwardCfg),
+    // Conversational AI responder — wired ONLY when the global kill switch (AI_RESPONDER_ENABLED)
+    // AND this client's ai_enabled are both on. processInbound runs it AFTER the opt-out/suppression
+    // gate and only on the first delivery, and falls back to the keyword path on any error. When
+    // either switch is off, runAiResponder stays undefined and the keyword path is used unchanged.
+    runAiResponder:
+      aiResponderGloballyEnabled() && client.ai_enabled
+        ? buildRunAiResponder(client)
+        : undefined,
   };
 }
 

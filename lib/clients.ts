@@ -45,6 +45,16 @@ export interface Client {
   send_timezone: string;
   send_rate_per_hour: number;
   optout_confirmation: string | null;
+  /** Conversational-AI responder toggle for this client. Default false — the responder ships dark. */
+  ai_enabled: boolean;
+  /** Services the AI offers/qualifies for (e.g. "window cleaning, pressure washing"); shapes the prompt. */
+  ai_services: string | null;
+  /** Current offer/promo the AI may mention (no prices — pricing always pushes to a call). */
+  ai_offer: string | null;
+  /** The rep persona the AI speaks as: name + tone (e.g. "Lance, friendly and brief"). */
+  ai_persona: string | null;
+  /** Service area the AI references (e.g. "Tallahassee, FL"). */
+  ai_location: string | null;
   branding: unknown;
   created_at: string;
 }
@@ -72,6 +82,11 @@ function toClient(r: Record<string, unknown>): Client {
     send_timezone: String(r.send_timezone),
     send_rate_per_hour: Number(r.send_rate_per_hour),
     optout_confirmation: (r.optout_confirmation as string | null) ?? null,
+    ai_enabled: r.ai_enabled === true || r.ai_enabled === "t" || r.ai_enabled === "true",
+    ai_services: (r.ai_services as string | null) ?? null,
+    ai_offer: (r.ai_offer as string | null) ?? null,
+    ai_persona: (r.ai_persona as string | null) ?? null,
+    ai_location: (r.ai_location as string | null) ?? null,
     branding: r.branding ?? {},
     created_at: String(r.created_at),
   };
@@ -134,6 +149,11 @@ export interface CreateClientInput {
   target_period?: "week" | "month";
   plan_amount_cents?: number;
   billing_day?: number | null;
+  ai_enabled?: boolean;
+  ai_services?: string | null;
+  ai_offer?: string | null;
+  ai_persona?: string | null;
+  ai_location?: string | null;
 }
 
 /** Fields an operator may UPDATE on an existing client (all optional; only provided ones change). */
@@ -224,6 +244,15 @@ export async function updateClientConfig(
     const tp = fields.target_period === "week" ? "week" : "month";
     await sql`UPDATE clients SET target_period = ${tp} WHERE id = ${clientId}`;
   }
+  // Conversational-AI responder config (2026-06-29). ai_enabled flips the responder on for this
+  // client; the ai_* text fields shape the system prompt. Setting these touches ONLY the client
+  // config row — it never weakens the deterministic STOP / keyword / suppression gate that runs
+  // before the AI. The global env kill switch (AI_RESPONDER_ENABLED) still applies on top.
+  if (has("ai_enabled")) await sql`UPDATE clients SET ai_enabled = ${!!fields.ai_enabled} WHERE id = ${clientId}`;
+  if (has("ai_services")) await sql`UPDATE clients SET ai_services = ${fields.ai_services ?? null} WHERE id = ${clientId}`;
+  if (has("ai_offer")) await sql`UPDATE clients SET ai_offer = ${fields.ai_offer ?? null} WHERE id = ${clientId}`;
+  if (has("ai_persona")) await sql`UPDATE clients SET ai_persona = ${fields.ai_persona ?? null} WHERE id = ${clientId}`;
+  if (has("ai_location")) await sql`UPDATE clients SET ai_location = ${fields.ai_location ?? null} WHERE id = ${clientId}`;
 
   return getClientById(clientId);
 }

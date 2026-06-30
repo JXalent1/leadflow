@@ -15,6 +15,72 @@ client) or if the id is < 100000. Cleanups now also drop `trace_jobs`/`scrub_job
 a destructive live-DB fixture without checking it can't touch a real tenant.**
 
 
+_Last updated: 2026-06-29 (Claude Code — Conversational AI lead-qualifier BACKEND built on
+`build/ai-responder`; PR open into `main`, NOT merged — awaiting the 3-reviewer compliance/correctness/
+security pass. Runs in parallel with the UI-overhaul stream; no file overlap.)_
+
+## ▶ Conversational AI lead-qualifier (GHL-style) — BACKEND, review-gated (2026-06-29) — PR OPEN, NOT MERGED
+A new autonomous OUTBOUND path (Lance's GoHighLevel SMS AI): read **intent** (not keywords), reply fully
+human, qualify, set the "we'll reach out" expectation, capture + forward hot leads — **never texting an
+opted-out/suppressed contact.** **BACKEND ONLY** — no UI/components touched (the AI config UI ships with the
+UI-overhaul stream; until then the operator flips `clients.ai_enabled` via `updateClientConfig`).
+
+- **Compliance ordering is load-bearing.** `lib/inbound.ts processInbound` is unchanged through the
+  opt-out gate: the deterministic `isOptOut(body) || isConfiguredOptOut(body, keyword)` check + the
+  `logInboundOnce` dedupe gate run FIRST. The AI is delegated ONLY *after* both — and only when
+  `contact !== null` (we never text a number we don't store). So the AI **never runs on an opted-out
+  contact** and **fires at most once per inbound** (a deduped Twilio retry returns before the AI).
+- **The deterministic gate is NEVER model-dependent.** STOP / "2" / suppression are pure code in
+  `lib/classify.ts` + `lib/inbound.ts`; the LLM only handles non-opted-out inbounds.
+- **Every AI reply reuses the existing suppression gate.** `lib/ai-responder-wire.ts` builds `sendReply`
+  as: re-load the contact (`getContactById`) → `isPhoneOptedOut` → `replyRefusalReason` → refuse, else
+  `sendOne(contact.phone, …)` to the **STORED phone only** (never a model-supplied number) → log
+  `status='ai_reply'`. At most ONE reply per inbound (no double-text).
+- **Fail-safe.** `processInbound` wraps `runAiResponder` in try/catch; on `null` (e.g. quiet hours) or
+  ANY throw it falls back to the keyword path. The inbound is already logged, so a fallback never loses
+  the lead and never crashes the webhook (route still returns 200/TwiML).
+- **Behavior knobs:** auto-sends gated to the client send window; turn cap (default 5, derived from the
+  `messages.status='ai_reply'` count); 3-strike dismiss for non-serious (`contacts.ai_strikes`); a
+  qualified lead (interest + service + wants-call) → **exactly one** hot lead (`createLead`) + **one**
+  `forwardLead` carrying the model's rich summary → `ai_status='handed_off'` (AI stops; a human owns it).
+- **Files:** `lib/ai-responder.ts` (PURE core + `buildSystemPrompt`, DB/SDK-free → unit-testable),
+  `lib/ai-client.ts` (real Claude call, `@anthropic-ai/sdk`, structured JSON output, effort low,
+  `claude-opus-4-8`), `lib/ai-db.ts` (per-contact AI state + history/turn-count, client-scoped),
+  `lib/ai-responder-wire.ts` (assembles real deps; `aiResponderGloballyEnabled()` gate). The webhook's
+  `buildDeps` wires `runAiResponder` ONLY when `AI_RESPONDER_ENABLED` && `client.ai_enabled`.
+- **Schema (idempotent, in `db/schema.sql`):** `clients.ai_enabled/ai_services/ai_offer/ai_persona/
+  ai_location`; `contacts.ai_status/ai_strikes`. `lib/clients.ts` extended (Client type, `toClient`,
+  `CreateClientInput`, `updateClientConfig` setter). Run `npm run schema` before enabling.
+- **Env:** `ANTHROPIC_API_KEY`, `AI_RESPONDER_ENABLED` (global kill switch — must be `"true"`),
+  optional `AI_RESPONDER_MODEL` (default `claude-opus-4-8`), `AI_RESPONDER_MAX_TURNS` (default 5).
+  `ai_enabled` ships **OFF for all clients** → Talan byte-unchanged.
+- **Green:** `tsc` clean, `npm run build` green, `npm test` = **279** (+21 unit: pure-core scenarios +
+  `processInbound` wiring). New **`npm run test:ai`** live-DB fixture (MOCKED Claude + Twilio — no spend,
+  no sends; uses `createClient` for a throwaway tenant, deletes only what it created). Not run locally
+  (no DB creds in this session) — the operator runs it after `npm run schema`.
+- **REVIEW DONE (3 read-only reviewers — compliance / correctness / security):**
+  - **Security:** claim holds (stored-phone-only, model can't control the destination, no secrets
+    logged, multi-tenant scoped). 1 Low — the model-generated `summary` is the body of the operator
+    ping (operator already receives the lead's reply text; can't change the `to` or reach the prospect). Logged.
+  - **Compliance:** hard "never *texts* an opted-out contact" holds (the `sendReply` gate fail-closes).
+    Medium — the AI was still *invoked* (and could create/forward a lead) for a PRE-EXISTING opt-out.
+    **FIXED:** `runAiResponder` now short-circuits on `input.suppressed` → returns null → defers to the
+    keyword path; the wire computes `suppressed` from the freshest `getContactById`+`isPhoneOptedOut`.
+    So the AI literally never runs on an opted-out contact (+ saves a Claude call). Low TOCTOU logged.
+  - **Correctness — 1 HIGH, FIXED:** a post-commit throw (`markHandedOff`/`sendReply` raw `sql`) in the
+    qualified branch propagated to `processInbound`'s catch → keyword fallback → **duplicate lead +
+    forward in one request**. **FIX:** the pure core wraps EVERY post-decision effect in `safe()`
+    (logs + continues); only a pre-side-effect `classify` throw propagates. Once the lead is created
+    the outcome stays `ai_lead`, so the caller never falls back. Engaged-branch `sendReply` errors are
+    swallowed too (no spurious keyword lead). Logged: handoff-durability degrades to baseline
+    keyword behavior (already multi-lead-per-inbound); pre-existing keyword lost-lead on a crash
+    between log-commit and lead-commit. Dedupe gate / single-reply / turn-cap (exactly 5) all solid.
+  - Re-verified: `tsc`/build green, `npm test` = **283** (+4 — suppression short-circuit + 3 post-side-
+    effect-no-propagation tests).
+- **NEXT:** merge PR #4 into `main` (review passed, Critical/High applied). Operator sets
+  `ANTHROPIC_API_KEY` + `AI_RESPONDER_ENABLED` in Vercel + runs `npm run schema`; `ai_enabled` stays
+  OFF until a client opts in.
+
 _Last updated: 2026-06-29 (Claude Code — skip-trace reliability: retry/backoff on transient Tracerfy
 errors + a graceful resumable pause in the driver instead of a dead `skiptrace_failed`. Branch
 `build/trace-resilience`, PR into `main`, NOT merged.)_

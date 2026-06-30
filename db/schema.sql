@@ -91,6 +91,15 @@ SELECT setval(pg_get_serial_sequence('campaigns', 'id'), GREATEST((SELECT MAX(id
 -- even when marked clean). Idempotent: existing rows backfill to 'vendor' so the Talan pilot is unchanged.
 ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS scrub_mode text NOT NULL DEFAULT 'vendor';
 
+-- Server-side sender (2026-06-30): auto_send is the persistent "the operator wants this campaign
+-- actively sending" flag the per-minute cron (/api/cron/send) reads to know which campaigns to
+-- drive WITHOUT a browser. The dashboard Run button sets it true (Pause sets it false) and the send
+-- path clears it once the eligible set genuinely drains. It is NOT a safety control -- no-double-send,
+-- the send window, opt-out/suppression and eligibility are unchanged and gate every batch regardless.
+-- Idempotent: existing rows backfill to false (no campaign auto-sends until the operator opts in).
+ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS auto_send boolean NOT NULL DEFAULT false;
+CREATE INDEX IF NOT EXISTS idx_campaigns_auto_send ON campaigns(auto_send) WHERE auto_send = true;
+
 -- Follow-up / re-engagement campaigns (Build: followup-campaigns, 2026-06-30). A follow-up campaign
 -- re-texts a PRIOR campaign's non-responders, REUSING their already-traced + already-clean phones
 -- (NO re-trace, NO re-scrub, no vendor spend -- that reuse is the whole margin point). source_campaign_id

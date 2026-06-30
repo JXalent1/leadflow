@@ -6,8 +6,6 @@ import {
   SCRUB_BATCH,
   MAX_STAGE_ITERATIONS,
   MAX_SEND_RATE_PER_HOUR,
-  sendBatchSize,
-  clientPacingDelayMs,
 } from "@/lib/pipeline";
 import Card, { CardHeader } from "./ui/card";
 import Button from "./ui/button";
@@ -21,9 +19,14 @@ import { Input } from "./ui/field";
  *
  * Compliance is unchanged: every send batch goes through the campaign endpoint's
  * getEligibleContacts + atomic claimForSend (with the V2 opt-out re-check). This component only
- * DRIVES those endpoints — it has no eligibility/suppression logic of its own. It's resumable:
- * all state lives in the DB, so closing the tab and clicking Run again picks up where it left off
- * (and adopts an already-open run via `activeRunId`).
+ * DRIVES those endpoints — it has no eligibility/suppression logic of its own.
+ *
+ * SERVER-SIDE SENDER (2026-06-30): trace + scrub are still driven here batch-by-batch, but the SEND
+ * is no longer driven from the browser. After scrub, the runner just ARMS server-side sending
+ * (POST /api/campaign { autoSend: true }) and the per-minute cron (/api/cron/send) drains the
+ * eligible set to completion — so the operator can close the tab and the send still finishes inside
+ * the window. Pause clears the flag (POST { autoSend: false }). Live progress comes from the
+ * dashboard snapshot (getSendProgress), not from this driver.
  */
 
 interface Props {
@@ -33,9 +36,11 @@ interface Props {
   ratePerHour: number;
   windowLabel: string;
   withinWindow: boolean;
-  /** The in-flight run id (if any), so a resumed drive continues its OWN run instead of being blocked. */
+  /** The in-flight run id (if any). Legacy: the send is now server-driven, so this is informational. */
   activeRunId: number | null;
-  /** Re-pull the dashboard snapshot so progress is live between batches. */
+  /** Whether server-side sending is currently armed (the cron is draining this campaign). */
+  autoSend: boolean;
+  /** Re-pull the dashboard snapshot so progress is live. */
   onChanged: () => void;
 }
 
@@ -77,11 +82,12 @@ export default function PipelineRunner({
   ratePerHour,
   windowLabel,
   withinWindow,
-  activeRunId,
+  autoSend,
   onChanged,
 }: Props) {
   const [running, setRunning] = useState(false);
   const [paused, setPaused] = useState(false);
+  const [pausing, setPausing] = useState(false);
   const [stage, setStage] = useState<string | null>(null);
   const [tally, setTally] = useState<Tally>(ZERO);
   const [msg, setMsg] = useState<{ kind: MsgKind; text: string } | null>(null);
@@ -188,61 +194,24 @@ export default function PipelineRunner({
         if (Number(data.scrubbed ?? 0) === 0) break;
       }
 
-      // ---- STAGE 3: PACED SEND (one driven run, batch by batch, until drained) --------------
-      setStage("Sending");
-      let runId: number | undefined = activeRunId ?? undefined;
-      let rate = ratePerHour;
-      for (let i = 0; i < MAX_STAGE_ITERATIONS; i++) {
-        const { status, ok, data } = await post("/api/campaign", {
-          confirm: true,
-          limit: sendBatchSize(rate),
-          runId,
-        });
-        if (status === 401) return setMsg({ kind: "err", text: "Session expired — reload and log in." });
-        // Deliver-then-stop (V6): the send route refuses once the lead target is met for the period.
-        if (data.paused || data.reason === "target_met")
-          return setMsg({
-            kind: "info",
-            text:
-              typeof data.message === "string"
-                ? data.message
-                : `Target met — paused until ${String(data.nextPeriod ?? "the next period")}.`,
-          });
-        if (data.error === "outside_send_window")
-          return setMsg({
-            kind: "info",
-            text: `Paused — outside the send window (${String(data.window ?? windowLabel)}). Sent ${acc.sent} so far. Click Run during the window to finish.`,
-          });
-        if (data.error === "campaign_already_running")
-          return setMsg({
-            kind: "info",
-            text: "Paused — another send run is active for this campaign. Reload the page to resume it.",
-          });
-        if (!ok || data.error)
-          return setMsg({ kind: "err", text: `Send error: ${String(data.error ?? status)}.` });
+      // ---- STAGE 3: HAND THE SEND TO THE SERVER (arm auto_send; the cron drains it) ----------
+      // The browser no longer drives every send batch — it just ARMS server-side sending. The
+      // per-minute cron then texts every eligible contact, paced, within the window, even with this
+      // tab closed. Suppression/eligibility/window are enforced server-side on every batch.
+      setStage("Starting send");
+      const { status, ok, data } = await post("/api/campaign", { autoSend: true });
+      if (status === 401) return setMsg({ kind: "err", text: "Session expired — reload and log in." });
+      if (!ok || data.error)
+        return setMsg({ kind: "err", text: `Could not start sending: ${String(data.error ?? status)}.` });
+      onChanged();
 
-        acc.sent += Number(data.sent ?? 0);
-        acc.failed += Number(data.failed ?? 0);
-        setTally({ ...acc });
-        runId = typeof data.runId === "number" ? data.runId : runId;
-        if (typeof data.ratePerHour === "number") rate = data.ratePerHour;
-        onChanged();
-
-        if (data.stoppedForWindow)
-          return setMsg({
-            kind: "info",
-            text: `Paused — the send window closed mid-run. Sent ${acc.sent} so far. Click Run during the window to finish.`,
-          });
-        if (data.done) break;
-
-        // Pace the gap BETWEEN batches so the realized rate matches the configured one (the server
-        // paces within a batch; this restores the boundary delay it omits after the last send).
-        await sleep(clientPacingDelayMs(rate));
-      }
-
+      const sendWindow = data.sendWindow as { within?: boolean } | undefined;
+      const eligibleNow = Number((data as { eligible?: number }).eligible ?? 0);
       setMsg({
         kind: "ok",
-        text: `Pipeline complete — traced ${acc.traced}, scrubbed clean ${acc.clean}, sent ${acc.sent}, failed ${acc.failed}.`,
+        text: sendWindow?.within
+          ? `Sending is ON — the server is now texting the ${eligibleNow} eligible contact(s), paced within ${windowLabel}. You can close this tab; it finishes on its own. Traced ${acc.traced}, scrubbed clean ${acc.clean}. Use Pause to stop.`
+          : `Queued — the send window (${windowLabel}) is closed, so the server starts sending automatically when it opens (no tab needed). Traced ${acc.traced}, scrubbed clean ${acc.clean}. Use Pause to cancel.`,
       });
     } catch (err) {
       setMsg({
@@ -284,6 +253,24 @@ export default function PipelineRunner({
     }
   }
 
+  /** Pause server-side sending: clear auto_send so the cron stops driving this campaign. */
+  async function pauseSending() {
+    setPausing(true);
+    try {
+      const { ok, data } = await post("/api/campaign", { autoSend: false });
+      if (!ok || data.error) {
+        setMsg({ kind: "err", text: `Could not pause: ${String(data.error ?? "error")}.` });
+        return;
+      }
+      setMsg({ kind: "info", text: "Server-side sending paused. Already-sent contacts are unaffected. Click Run to resume." });
+      onChanged();
+    } catch (err) {
+      setMsg({ kind: "err", text: `Pause failed: ${err instanceof Error ? err.message : "network error"}` });
+    } finally {
+      setPausing(false);
+    }
+  }
+
   return (
     <Card className="ring-1 ring-brand-tint">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -320,6 +307,12 @@ export default function PipelineRunner({
             </Button>
           ) : null}
 
+          {autoSend ? (
+            <Button variant="secondary" size="sm" onClick={pauseSending} loading={pausing} className="h-9">
+              {pausing ? "Pausing…" : "Pause sending"}
+            </Button>
+          ) : null}
+
           <Button
             onClick={() => {
               setConfirmText("");
@@ -344,10 +337,20 @@ export default function PipelineRunner({
         </div>
       ) : null}
 
+      {autoSend && !running ? (
+        <div className="mt-3 flex flex-wrap items-center gap-3 rounded-xl bg-brand-tint px-3 py-2 text-sm">
+          <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-brand" />
+          <span className="font-medium text-brand-strong">Server-side sending is on</span>
+          <span className="text-brand-strong">
+            the server is draining this campaign within {windowLabel} — no need to keep this tab open.
+          </span>
+        </div>
+      ) : null}
+
       {!withinWindow ? (
         <p className="mt-2 text-xs text-ink-subtle">
           Note: the send window ({windowLabel}) is closed — trace + scrub will run now; the send
-          stage will pause until the window opens.
+          stage hands off to the server, which begins sending automatically when the window opens.
         </p>
       ) : null}
 

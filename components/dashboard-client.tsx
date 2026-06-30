@@ -119,6 +119,7 @@ export default function DashboardClient({
         windowLabel={data.sendWindow.label}
         withinWindow={data.sendWindow.within}
         activeRunId={data.activeRunId}
+        autoSend={data.autoSend}
         onChanged={refresh}
       />
 

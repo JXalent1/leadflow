@@ -69,3 +69,20 @@ export function clientPacingDelayMs(ratePerHour: number): number {
   const r = Number.isFinite(ratePerHour) && ratePerHour > 0 ? Math.max(1, Math.floor(ratePerHour)) : 60;
   return Math.round(3_600_000 / r);
 }
+
+/**
+ * How many contacts the per-minute SERVER cron (/api/cron/send) sends in ONE batch, given the live
+ * rate (sends/hour). (Server-side sender, 2026-06-30.)
+ *
+ * The cron fires once a minute and sends one batch per active campaign, so the batch is the
+ * per-MINUTE quota: round(rate / 60), clamped to [1, 200]. By construction a batch of this size
+ * paced at 3600/rate seconds between sends takes ≈ (quota - 1) * (3600/rate) ≈ 60s — it lands inside
+ * the 1-minute tick (and always well under the 300s function limit), so the realized rate tracks the
+ * configured rate without batches piling up across ticks. The 200 cap bounds any single batch's
+ * wall-clock at high rates (e.g. 20000/hr → quota capped at 200, ~36s). Even if two ticks briefly
+ * overlap, the atomic per-contact claim still guarantees no double-send — this only governs throughput.
+ */
+export function cronBatchSize(ratePerHour: number): number {
+  const r = Number.isFinite(ratePerHour) && ratePerHour > 0 ? ratePerHour : 60;
+  return Math.max(1, Math.min(200, Math.round(r / 60)));
+}

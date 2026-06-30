@@ -2,6 +2,29 @@
 
 _For the next session — read this first._
 
+## ▶ Merge `main` → `build/server-side-send` resolved + re-reviewed (2026-06-30) — PR #7 open
+The server-side-sender branch was merged up to current `main` (now carrying **#18 follow-up
+campaigns** + **#6 AI settings**). Resolution kept BOTH the server-side extraction AND #18's
+follow-up safety. **The interrupted merge ("disk problem") had MERGE_HEAD=`78d1dc0`; main had since
+advanced to `b359ff3`** — so the in-progress merge was committed first, then a second `git merge
+origin/main` pulled in `b359ff3` (the auto-pause fixture assertion update: client 1 `lead_target=0`,
+auto-pause off). Both merges committed; `origin/main` is now an ancestor of HEAD.
+- **`followUp` (#18) lives INSIDE `lib/send-batch.sendCampaignBatch`** — threaded into
+  `getEligibleContacts` + atomic `claimForSend` + `runSend`, so a contact who opts out / replies /
+  becomes a lead AFTER seeding is re-excluded EVERY batch. **Both** the operator route
+  (`source_campaign_id !== null`) and the cron drain (`getAutoSendTargets().followUp`) apply it.
+- **Green:** `tsc` clean, `npm run build` green, `npm test` = **317**, `npm run schema` (80 stmts),
+  and the FULL live suite (isolation/access/cockpit/auto-pause/passthrough/optout/forward/ai/
+  inbox-scope/followup/cron) — all pass. Explicit follow-up-via-cron acceptance proved a follow-up
+  drains server-side and still excludes opted-out + since-replied + leads, no double-send.
+- **Re-review (3 read-only reviewers, send-path critical) — all claims HOLD, no Critical/High/Medium:**
+  no double-send via the cron at any concurrency (atomic claim is the guarantee); follow-up still
+  excludes opted-out/replied/lead in both callers; cron honors window + suppression; the drain
+  **fails closed** without `CRON_SECRET`. Logged Lows (all pre-existing, fail toward under-sending):
+  stuck-`sending`=lost-not-doubled; duplicate run rows (bookkeeping); per-contact-not-per-phone dedup.
+- **NEXT:** merge PR #7 into `main` (review passed). Operator still needs `CRON_SECRET` in Vercel
+  (Production) + the per-minute cron firing — see the server-side-sender entry below for the runbook.
+
 ## ⚠️ INCIDENT + fixture safety fix (2026-06-27)
 **What happened:** the live-DB fixtures (`isolation`/`access`/`cockpit`/`auto-pause`/`passthrough`)
 hardcoded `C2 = 2` as a disposable test tenant and ran `DELETE ... WHERE client_id = 2` UNCONDITIONALLY
@@ -112,6 +135,44 @@ _Earlier handoff entries below._
 _Last updated: 2026-06-29 (Claude Code — UI/UX overhaul: a minimal-premium neutral design system
 supersedes the "Fresh"/teal R1 look across EVERY screen; accent moved teal→indigo, still a re-themable
 `--brand` token; FRONT-END only.)_
+
+## ▶ Server-side sender — finish sends without a browser tab (2026-06-30) — DONE (on `build/server-side-send`)
+**The freeze is fixed: the send now runs server-side.** The old client-side driver
+(`components/pipeline-runner.tsx`) drove every send batch from the browser, so a backgrounded/closed
+tab paused the send. Sending is now **server-driven** and the browser is no longer required.
+
+- **New persistent flag `campaigns.auto_send`** (schema, idempotent, default false, partial index). It
+  is the "operator wants this campaign sending" switch the cron reads. NOT a safety control —
+  no-double-send / window / opt-out / eligibility are unchanged and gate every batch regardless.
+- **ONE shared send path:** `lib/send-batch.ts` `sendCampaignBatch()` — the per-batch orchestration
+  (window gate → active-run resolve → V6 target gate → `getEligibleContacts` → claim/create run →
+  paced `runSend` → finalize) moved verbatim out of `app/api/campaign/route.ts`. **Both** the operator
+  route and the cron call it. `claimForSend`/`getEligibleContacts`/the window + target gates are
+  **reused byte-for-byte, never forked.** The route maps its result back to the EXACT same JSON the
+  client expected (`paused`/`outside_send_window`/`campaign_already_running`/`done`/`stoppedForWindow`/
+  counters), so `pipeline-runner` + any caller see no shape change.
+- **Drain endpoint `app/api/cron/send/route.ts` (GET + POST):** auth via `CRON_SECRET`
+  (`Authorization: Bearer …`, Vercel Cron convention, or `x-cron-secret`); **fails closed** if the
+  secret is unset; missing/wrong → 401. Per call it drives every armed campaign
+  (`getAutoSendTargets()` = `auto_send=true` AND client `status='active'`) by ONE paced batch
+  (`cronBatchSize(rate)` ≈ rate/60, so a batch lands inside the 1-min tick). `adoptActiveRun:true` lets
+  overlapping ticks share the active run — **the atomic claim is the no-double-send guarantee**, asserted
+  under concurrency. Clears `auto_send` only on a genuine drain; window/target pauses leave it ON to resume.
+- **Scheduling:** `vercel.json` cron `* * * * *` → `/api/cron/send`. **Per-minute cron needs a paid
+  Vercel plan.** On Hobby, point an external uptime pinger (cron-job.org) at `/api/cron/send` once a
+  minute with header `Authorization: Bearer $CRON_SECRET` (or `x-cron-secret: $CRON_SECRET`).
+- **Control / UI:** Run now flips `auto_send` on (server takes over) and shows live progress from
+  `getSendProgress`; a **Pause** button clears it. Trace + scrub still client-driven. `lib/dashboard.ts`
+  surfaces `autoSend`; `dashboard-client.tsx` passes it to the runner.
+- **OPERATOR TODO before this works in prod:** add **`CRON_SECRET`** to Vercel env (Production), run
+  `npm run schema` (applies `auto_send`), and confirm the cron is firing (Vercel → Project → Cron, or
+  watch `sent` climb on the dashboard with the tab closed). If on Hobby, wire the external pinger instead.
+- **Green:** `tsc` clean, `npm run build` green, `npm test` = **305** (+3 `cronBatchSize`). The live-DB
+  fixtures (incl. the new **`npm run test:cron`**) need Neon creds (absent in this build session) — rerun
+  before merge: `test:cron` proves auth-401, ≤1 batch/tick, multi-tick drain + run close + `auto_send`
+  clear, opted-out never texted, window-closed sends nothing + stays armed, and **overlapping ticks never
+  double-send** (Twilio magic numbers, DB pristine after). Also rerun `test:isolation`/`access`/`cockpit`/
+  `auto-pause`/`passthrough`/`optout`/`forward`/`ai` — this change didn't touch their logic.
 
 ## ▶ UI/UX overhaul — minimal-premium across all screens (2026-06-29) — DONE (on `build/ui-overhaul`, PR not merged)
 Replaced the "Fresh" teal/rounded R1 look (read cheesy) with a restrained, neutral, data-forward,
